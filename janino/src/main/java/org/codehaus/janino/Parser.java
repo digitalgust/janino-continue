@@ -175,7 +175,7 @@ public
 class Parser {
 
     private final Scanner     scanner;
-    private final TokenStream tokenStream;
+    private final TokenStreamImpl tokenStream;
 
     public
     Parser(Scanner scanner) { this(scanner, new TokenStreamImpl(scanner)); }
@@ -183,7 +183,7 @@ class Parser {
     public
     Parser(Scanner scanner, TokenStream tokenStream) {
         (this.scanner = scanner).setIgnoreWhiteSpace(true);
-        this.tokenStream = tokenStream;
+        this.tokenStream = tokenStream instanceof TokenStreamImpl ? (TokenStreamImpl) tokenStream : new TokenStreamImpl(scanner, tokenStream);
     }
 
     /**
@@ -894,6 +894,7 @@ class Parser {
         );
 
         if (this.peek("{")) {
+            result.hasClassBody = true;
             this.parseClassBody(result);
         }
 
@@ -994,13 +995,15 @@ class Parser {
             if (docComment == null) {
                 this.warning("MATDCM", "Member annotation type doc comment missing", this.location());
             }
-            classDeclaration.addMemberTypeDeclaration((MemberTypeDeclaration) this.parseInterfaceDeclarationRest(
+            classDeclaration.addMemberTypeDeclaration((MemberTypeDeclaration) this.parseAnnotationTypeDeclarationRest(
                 docComment,                                        // docComment
                 this.interfaceModifiers(modifiers),                // modifiers
                 InterfaceDeclarationContext.NAMED_TYPE_DECLARATION // context
             ));
             return;
         }
+
+        TypeParameter[] typeParameters = this.parseTypeParametersOpt();
 
         // Constructor.
         if (
@@ -1009,15 +1012,13 @@ class Parser {
             && this.peekNextButOne("(")
         ) {
             if (docComment == null) this.warning("CDCM", "Constructor doc comment missing", this.location());
-            classDeclaration.addConstructor(this.parseConstructorDeclarator(
-                docComment,                          // declaringClass
-                this.constructorModifiers(modifiers) // modifiers
-            ));
+            ConstructorDeclarator constructor = this.parseConstructorDeclarator(docComment, this.constructorModifiers(modifiers));
+            constructor.setTypeParameters(typeParameters);
+            classDeclaration.addConstructor(constructor);
             return;
         }
 
         // Member method or field.
-        TypeParameter[] typeParameters = this.parseTypeParametersOpt();
 
         // VOID method declaration?
         if (this.peekRead("void")) {
@@ -1258,7 +1259,7 @@ class Parser {
                     throw this.compileException("Modifier \"default\" not allowed on member enum declaration");
                 }
                 interfaceDeclaration.addMemberTypeDeclaration(
-                    (MemberTypeDeclaration) this.parseClassDeclarationRest(
+                    (MemberTypeDeclaration) this.parseEnumDeclarationRest(
                         docComment,                              // docComment
                         this.classModifiers(modifiers),          // modifiers
                         ClassDeclarationContext.TYPE_DECLARATION // context
@@ -1298,7 +1299,7 @@ class Parser {
                     );
                 }
                 interfaceDeclaration.addMemberTypeDeclaration(
-                    (MemberTypeDeclaration) this.parseInterfaceDeclarationRest(
+                    (MemberTypeDeclaration) this.parseAnnotationTypeDeclarationRest(
                         docComment,                                        // docComment
                         this.interfaceModifiers(modifiers),                // modifiers
                         InterfaceDeclarationContext.NAMED_TYPE_DECLARATION // context
@@ -1418,7 +1419,7 @@ class Parser {
         List<BlockStatement>  statements            = new ArrayList<>();
         if (
             this.peek(
-                "this", "super", "new", "void", // SUPPRESS CHECKSTYLE Wrap:1
+                "<", "this", "super", "new", "void", // SUPPRESS CHECKSTYLE Wrap:1
                 "byte", "char", "short", "int", "long", "float", "double", "boolean"
             ) != -1
             || this.peekLiteral()
@@ -1540,7 +1541,7 @@ class Parser {
 
         final FormalParameters formalParameters = this.parseFormalParameters();
 
-        for (int i = this.parseBracketsOpt(); i > 0; --i) type = new ArrayType(type);
+        type = this.parseArrayTypeRest(type);
 
         ReferenceType[] thrownExceptions;
         if (this.peekRead("throws")) {
@@ -1686,11 +1687,16 @@ class Parser {
             if (hasEllipsis[0]) throw this.compileException("Only the last parameter may have an ellipsis");
             l.add(this.parseFormalParameter(hasEllipsis));
         } while (this.peekRead(","));
-        return new FormalParameters(
-            this.location(),                                              // location
-            (FormalParameter[]) l.toArray(new FormalParameter[l.size()]), // parameters
-            hasEllipsis[0]                                                // variableArity
-        );
+        FormalParameter receiver = null;
+        for (int i = l.size() - 1; i >= 0; i--) {
+            if ((l.get(i).name.equals("this") || l.get(i).name.endsWith(".this"))) {
+                if (i != 0 || hasEllipsis[0] && l.size() == 1) throw this.compileException("Receiver must be the first, non-varargs parameter");
+                receiver = l.remove(i);
+            }
+        }
+        FormalParameters result = new FormalParameters(this.location(), l.toArray(new FormalParameter[l.size()]), hasEllipsis[0]);
+        result.receiverParameter = receiver;
+        return result;
     }
 
     /**
@@ -1733,7 +1739,11 @@ class Parser {
 
         // Ignore annotations.
 
-        return this.parseFormalParameterRest(modifiers, this.parseType(), hasEllipsis);
+        List<Annotation> ellipsisAnnotations = new ArrayList<>();
+        Type type = this.parseArrayTypeRest(this.parseTypeAtom(new Annotation[0]), ellipsisAnnotations);
+        FormalParameter result = this.parseFormalParameterRest(modifiers, type, hasEllipsis);
+        result.variableArityAnnotations = ellipsisAnnotations.toArray(new Annotation[ellipsisAnnotations.size()]);
+        return result;
     }
 
     /**
@@ -1758,10 +1768,11 @@ class Parser {
         }
 
         Location location = this.location();
-        String   name     = this.read(TokenType.IDENTIFIER);
-        this.verifyIdentifierIsConventionalLocalVariableOrParameterName(name, location);
+        String name = this.peekRead("this") ? "this" : this.read(TokenType.IDENTIFIER);
+        if (this.peekRead(".")) { this.read("this"); name += ".this"; }
+        if (!name.equals("this") && !name.endsWith(".this")) this.verifyIdentifierIsConventionalLocalVariableOrParameterName(name, location);
 
-        for (int i = this.parseBracketsOpt(); i > 0; --i) type = new ArrayType(type);
+        type = this.parseArrayTypeRest(type);
         return new FormalParameter(location, modifiers, type, name);
     }
 
@@ -1800,7 +1811,7 @@ class Parser {
             location,
             Parser.hasAccessModifier(modifiers, "final"),
             (ReferenceType[]) catchTypes.toArray(new ReferenceType[catchTypes.size()]),
-            name
+            name, modifiers
         );
     }
 
@@ -2006,11 +2017,16 @@ class Parser {
     parseVariableDeclaratorRest(String name) throws CompileException, IOException  {
         Location loc = this.location();
 
-        int brackets = this.parseBracketsOpt();
-
+        Type dimensions = this.parseArrayTypeRest(new PrimitiveType(loc, Primitive.VOID));
+        List<Annotation[]> annotations = new ArrayList<>();
+        while (dimensions instanceof ArrayType) {
+            annotations.add(((ArrayType) dimensions).annotations);
+            dimensions = ((ArrayType) dimensions).componentType;
+        }
         ArrayInitializerOrRvalue initializer = this.peekRead("=") ? this.parseVariableInitializer() : null;
-
-        return new VariableDeclarator(loc, name, brackets, initializer);
+        VariableDeclarator result = new VariableDeclarator(loc, name, annotations.size(), initializer);
+        result.dimensionAnnotations = annotations.toArray(new Annotation[annotations.size()][]);
+        return result;
     }
 
     /**
@@ -2580,26 +2596,49 @@ class Parser {
      */
     public Type
     parseType() throws CompileException, IOException {
+        List<Annotation> annotations = new ArrayList<>();
+        while (this.peek("@")) annotations.add(this.parseAnnotation());
+        return this.parseType(annotations.toArray(new Annotation[annotations.size()]));
+    }
 
+    private Type parseType(Annotation[] annotations) throws CompileException, IOException {
+        return this.parseArrayTypeRest(this.parseTypeAtom(annotations));
+    }
+    private Type parseTypeAtom(Annotation[] annotations) throws CompileException, IOException {
         Type res;
         switch (this.peekRead(
             "byte", "short", "char", "int", "long", "float", "double", "boolean" // SUPPRESS CHECKSTYLE Wrap
         )) {
-        case 0:  res = new PrimitiveType(this.location(), Primitive.BYTE);    break;
-        case 1:  res = new PrimitiveType(this.location(), Primitive.SHORT);   break;
-        case 2:  res = new PrimitiveType(this.location(), Primitive.CHAR);    break;
-        case 3:  res = new PrimitiveType(this.location(), Primitive.INT);     break;
-        case 4:  res = new PrimitiveType(this.location(), Primitive.LONG);    break;
-        case 5:  res = new PrimitiveType(this.location(), Primitive.FLOAT);   break;
-        case 6:  res = new PrimitiveType(this.location(), Primitive.DOUBLE);  break;
-        case 7:  res = new PrimitiveType(this.location(), Primitive.BOOLEAN); break;
-        case -1: res = this.parseReferenceType(); break;
+        case 0:  res = new PrimitiveType(this.location(), Primitive.BYTE, annotations);    break;
+        case 1:  res = new PrimitiveType(this.location(), Primitive.SHORT, annotations);   break;
+        case 2:  res = new PrimitiveType(this.location(), Primitive.CHAR, annotations);    break;
+        case 3:  res = new PrimitiveType(this.location(), Primitive.INT, annotations);     break;
+        case 4:  res = new PrimitiveType(this.location(), Primitive.LONG, annotations);    break;
+        case 5:  res = new PrimitiveType(this.location(), Primitive.FLOAT, annotations);   break;
+        case 6:  res = new PrimitiveType(this.location(), Primitive.DOUBLE, annotations);  break;
+        case 7:  res = new PrimitiveType(this.location(), Primitive.BOOLEAN, annotations); break;
+        case -1: res = this.parseReferenceType(annotations); break;
         default: throw new AssertionError();
         }
 
-        for (int i = this.parseBracketsOpt(); i > 0; --i) res = new ArrayType(res);
-
         return res;
+    }
+
+    private Type parseArrayTypeRest(Type component) throws CompileException, IOException {
+        return this.parseArrayTypeRest(component, null);
+    }
+
+    private Type parseArrayTypeRest(Type component, @Nullable List<Annotation> ellipsisAnnotations) throws CompileException, IOException {
+        List<Annotation[]> dimensions = new ArrayList<>();
+        while (this.peek("@") || this.peek("[") && this.peekNextButOne("]")) {
+            List<Annotation> annotations = new ArrayList<>();
+            while (this.peek("@")) annotations.add(this.parseAnnotation());
+            if (ellipsisAnnotations != null && this.peek(".")) { ellipsisAnnotations.addAll(annotations); break; }
+            this.read("["); this.read("]");
+            dimensions.add(annotations.toArray(new Annotation[annotations.size()]));
+        }
+        for (int i = dimensions.size() - 1; i >= 0; i--) component = new ArrayType(component, dimensions.get(i));
+        return component;
     }
 
     /**
@@ -2629,12 +2668,44 @@ class Parser {
      */
     public ReferenceType
     parseReferenceType(Annotation[] annotations)  throws CompileException, IOException {
-        return new ReferenceType(
-            this.location(),
-            annotations,
-            this.parseQualifiedIdentifier(),
-            this.parseTypeArgumentsOpt()
-        );
+        Location location = this.location();
+        List<String> identifiers = new ArrayList<>();
+        List<Annotation[]> segments = new ArrayList<>();
+        List<TypeArgument[]> arguments = new ArrayList<>();
+        identifiers.add(this.read(TokenType.IDENTIFIER));
+        segments.add(new Annotation[0]);
+        arguments.add(this.parseTypeArgumentsOpt());
+        while (this.peek(".") && (this.peekNextButOne(TokenType.IDENTIFIER) || this.peekNextButOne("@"))) {
+            this.read(".");
+            List<Annotation> segment = new ArrayList<>();
+            while (this.peek("@")) segment.add(this.parseAnnotation());
+            identifiers.add(this.read(TokenType.IDENTIFIER));
+            segments.add(segment.toArray(new Annotation[segment.size()]));
+            arguments.add(this.parseTypeArgumentsOpt());
+        }
+        ReferenceType result = new ReferenceType(location, annotations, identifiers.toArray(new String[identifiers.size()]), arguments.get(arguments.size() - 1));
+        result.segmentAnnotations = segments.toArray(new Annotation[segments.size()][]);
+        result.segmentTypeArguments = arguments.toArray(new TypeArgument[arguments.size()][]);
+        return result;
+    }
+
+    private ReferenceType parseReferenceTypeRest(ReferenceType prefix) throws CompileException, IOException {
+        List<String> identifiers = new ArrayList<>(java.util.Arrays.asList(prefix.identifiers));
+        List<Annotation[]> annotations = new ArrayList<>(java.util.Arrays.asList(prefix.segmentAnnotations));
+        List<TypeArgument[]> arguments = new ArrayList<>(java.util.Arrays.asList(prefix.segmentTypeArguments));
+        while (this.peek(".") && (this.peekNextButOne(TokenType.IDENTIFIER) || this.peekNextButOne("@"))) {
+            this.read(".");
+            List<Annotation> segment = new ArrayList<>();
+            while (this.peek("@")) segment.add(this.parseAnnotation());
+            identifiers.add(this.read(TokenType.IDENTIFIER));
+            annotations.add(segment.toArray(new Annotation[segment.size()]));
+            arguments.add(this.parseTypeArgumentsOpt());
+        }
+        ReferenceType result = new ReferenceType(prefix.getLocation(), prefix.annotations, identifiers.toArray(new String[identifiers.size()]),
+            arguments.get(arguments.size() - 1));
+        result.segmentAnnotations = annotations.toArray(new Annotation[annotations.size()][]);
+        result.segmentTypeArguments = arguments.toArray(new TypeArgument[arguments.size()][]);
+        return result;
     }
 
     /**
@@ -2662,14 +2733,17 @@ class Parser {
      */
     private TypeParameter
     parseTypeParameter() throws CompileException, IOException {
+        List<Annotation> annotations = new ArrayList<>();
+        while (this.peek("@")) annotations.add(this.parseAnnotation());
+        Annotation[] declared = annotations.toArray(new Annotation[annotations.size()]);
         String name = this.read(TokenType.IDENTIFIER);
         if (this.peekRead("extends")) {
             List<ReferenceType> bound = new ArrayList<>();
             bound.add(this.parseReferenceType());
-            while (this.peekRead("&")) this.parseReferenceType();
-            return new TypeParameter(name, (ReferenceType[]) bound.toArray(new ReferenceType[bound.size()]));
+            while (this.peekRead("&")) bound.add(this.parseReferenceType());
+            return new TypeParameter(name, (ReferenceType[]) bound.toArray(new ReferenceType[bound.size()]), declared);
         }
-        return new TypeParameter(name, null);
+        return new TypeParameter(name, null, declared);
     }
 
     /**
@@ -2711,8 +2785,8 @@ class Parser {
         if (this.peekRead("?")) {
             Annotation[] annotationArray = (Annotation[]) annotations.toArray(new Annotation[annotations.size()]);
             return (
-                this.peekRead("extends") ? new Wildcard(Wildcard.BOUNDS_EXTENDS, this.parseReferenceType(), annotationArray) :
-                this.peekRead("super")   ? new Wildcard(Wildcard.BOUNDS_SUPER,   this.parseReferenceType(), annotationArray) :
+                this.peekRead("extends") ? new Wildcard(Wildcard.BOUNDS_EXTENDS, this.parseWildcardBound(), annotationArray) :
+                this.peekRead("super")   ? new Wildcard(Wildcard.BOUNDS_SUPER,   this.parseWildcardBound(), annotationArray) :
                 new Wildcard(annotationArray)
             );
         }
@@ -2721,16 +2795,20 @@ class Parser {
         if (annotations.isEmpty()) {
             t = this.parseType();
         } else {
-            // we know that primitives cannot be annotated with anything if they are a type argument so the
-            // only thing that would give trouble are arrays of primitives, which cannot be annotated yet.
             Annotation[] annotationArray = (Annotation[]) annotations.toArray(new Annotation[annotations.size()]);
-            t = this.parseReferenceType(annotationArray);
+            t = this.parseType(annotationArray);
         }
 
         int i = this.parseBracketsOpt();
         for (; i > 0; i--) t = new ArrayType(t);
         if (!(t instanceof TypeArgument)) throw this.compileException("'" + t + "' is not a valid type argument");
         return (TypeArgument) t;
+    }
+
+    private Type parseWildcardBound() throws CompileException, IOException {
+        Type bound = this.parseType();
+        if (bound instanceof PrimitiveType) throw this.compileException("Wildcard bound must be a reference type");
+        return bound;
     }
 
     /**
@@ -2793,6 +2871,7 @@ class Parser {
      */
     public Atom
     parseAssignmentExpression() throws CompileException, IOException {
+        if (this.peek(TokenType.IDENTIFIER) && this.peekNextButOne("->")) return this.parseLambdaExpression();
         Atom a = this.parseConditionalExpression();
         if (this.peek("=", "+=", "-=", "*=", "/=", "&=", "|=", "^=", "%=", "<<=", ">>=", ">>>=") != -1) {
             final Lvalue lhs      = a.toLvalueOrCompileException();
@@ -2819,7 +2898,8 @@ class Parser {
         Rvalue lhs = a.toRvalueOrCompileException();
         Rvalue mhs = this.parseExpression();
         this.read(":");
-        Rvalue rhs = this.parseConditionalExpression().toRvalueOrCompileException();
+        Rvalue rhs = this.peek(TokenType.IDENTIFIER) && this.peekNextButOne("->")
+            ? this.parseLambdaExpression() : this.parseConditionalExpression().toRvalueOrCompileException();
         return new ConditionalExpression(location, lhs, mhs, rhs);
     }
 
@@ -2916,13 +2996,24 @@ class Parser {
     public Atom
     parseAndExpression() throws CompileException, IOException  {
         Atom a = this.parseEqualityExpression();
+        // A parameterized type cannot be the operand of bitwise AND. Leave the
+        // separator for the intersection-cast parser.
+        if (a instanceof Type) return a;
         while (this.peekRead("&")) {
             Location location = this.location();
+            Atom rhs = this.parseEqualityExpression();
+            if (rhs instanceof Type) {
+                List<Type> bounds = new ArrayList<>();
+                this.intersectionBounds(a, bounds);
+                bounds.add((Type) rhs);
+                while (this.peekRead("&")) bounds.add(this.parseType());
+                return new CastBounds(location, bounds);
+            }
             a = new BinaryOperation(
                 location,
                 a.toRvalueOrCompileException(),
                 "&",
-                this.parseEqualityExpression().toRvalueOrCompileException()
+                rhs.toRvalueOrCompileException()
             );
         }
         return a;
@@ -2983,12 +3074,12 @@ class Parser {
                 ) {
 
                     // ambiguous-name '<' '?' ...
-                    return new ReferenceType(
+                    return this.parseArrayTypeRest(this.parseReferenceTypeRest(new ReferenceType(
                         this.location(),
                         new Annotation[0],
                         ((AmbiguousName) a).identifiers,
                         this.parseTypeArgumentsOpt()
-                    );
+                    )));
                 }
 
                 String operator = this.read().value;
@@ -3039,12 +3130,12 @@ class Parser {
                     while (this.read(">", ",") == 1) typeArguments.add(this.parseTypeArgument());
 
                     // ambiguous-name '<' Type [ TypeArguments ] { ',' TypeArgument } '>'
-                    return new ReferenceType(
+                    return this.parseArrayTypeRest(this.parseReferenceTypeRest(new ReferenceType(
                         this.location(),
                         new Annotation[0],
                         identifiers,
                         (TypeArgument[]) typeArguments.toArray(new TypeArgument[typeArguments.size()])
-                    );
+                    )));
                 }
 
                 a = new BinaryOperation(
@@ -3152,14 +3243,18 @@ class Parser {
 
         Atom a = this.parsePrimary();
 
+        if (a instanceof AmbiguousName && (this.peek("<", "@") != -1 || this.peek(".") && this.peekNextButOne("@"))
+            && this.isReferenceTypeSuffix((AmbiguousName) a)) {
+            a = this.parseReferenceQualifier((AmbiguousName) a);
+        }
+
         while (this.peek(".", "[") != -1) {
             a = this.parseSelector(a);
         }
 
         if (this.peekRead("::")) {
 
-            if (a instanceof ArrayType) {
-                this.read("new");
+            if (a instanceof ArrayType && this.peekRead("new")) {
 
                 // ArrayType '::' 'new'
                 return new ArrayCreationReference(this.location(), (ArrayType) a);
@@ -3171,6 +3266,7 @@ class Parser {
 
             case 0: // keyword
                 // ClassType '::' [ TypeArguments ] 'new'
+                if (a instanceof ArrayType) throw this.compileException("Array references cannot have explicit type arguments");
                 this.read("new");
                 return new ClassInstanceCreationReference(
                     this.location(),
@@ -3180,7 +3276,9 @@ class Parser {
 
             case 1: // identifier
                 // ( Rvalue | ReferenceType ) '::' [ TypeArguments ] identifier
-                return new MethodReference(this.location(), a, this.read(TokenType.IDENTIFIER));
+                MethodReference reference = new MethodReference(this.location(), a, this.read(TokenType.IDENTIFIER));
+                reference.typeArguments = typeArguments;
+                return reference;
 
             default:
                 throw new AssertionError(this.peek());
@@ -3196,6 +3294,29 @@ class Parser {
         }
 
         return a;
+    }
+
+    /** Probe with the normal type grammar, without consuming or splitting the real token stream. */
+    private boolean isReferenceTypeSuffix(AmbiguousName name) throws CompileException, IOException {
+        TokenStreamImpl view = new TokenStreamImpl(this.scanner) {
+            private int distance;
+            @Override protected Token produceToken() throws CompileException, IOException {
+                return Parser.this.tokenStream.peek(this.distance++);
+            }
+        };
+        Parser probe = new Parser(this.scanner, view);
+        probe.setSourceVersion(this.sourceVersion);
+        try {
+            probe.parseReferenceQualifier(name);
+            return probe.peek("::");
+        } catch (CompileException notAType) {
+            return false;
+        }
+    }
+
+    private Type parseReferenceQualifier(AmbiguousName name) throws CompileException, IOException {
+        ReferenceType prefix = new ReferenceType(name.getLocation(), new Annotation[0], name.identifiers, this.parseTypeArgumentsOpt());
+        return this.parseArrayTypeRest(this.parseReferenceTypeRest(prefix));
     }
 
     /**
@@ -3241,24 +3362,9 @@ class Parser {
     public Atom
     parsePrimary() throws CompileException, IOException {
 
+        if (this.peek("@")) return this.parseType();
+
         if (this.peekRead("(")) {
-
-            if (
-                this.peek("boolean", "char", "byte", "short", "int", "long", "float", "double") != -1
-                && !this.peekNextButOne(TokenType.IDENTIFIER)
-            ) {
-
-                // '(' PrimitiveType { '[]' } ')' UnaryExpression
-                Type type     = this.parseType();
-                int  brackets = this.parseBracketsOpt();
-                this.read(")");
-                for (int i = 0; i < brackets; ++i) type = new ArrayType(type);
-                return new Cast(
-                    this.location(),                                         // location
-                    type,                                                    // targetType
-                    this.parseUnaryExpression().toRvalueOrCompileException() // value
-                );
-            }
 
             // '(' ')' '->' LambdaBody
             if (this.peekRead(")")) {
@@ -3266,6 +3372,14 @@ class Parser {
                 Location         loc        = this.location();
                 this.read("->");
                 return new LambdaExpression(loc, parameters, this.parseLambdaBody());
+            }
+
+            if (this.peek("final")) {
+                FormalParameters parameters = this.parseFormalParameterList();
+                this.read(")");
+                Location loc = this.location();
+                this.read("->");
+                return new LambdaExpression(loc, new FormalLambdaParameters(parameters), this.parseLambdaBody());
             }
 
             Atom a;
@@ -3295,7 +3409,7 @@ class Parser {
                 if (names.length != 1) throw this.compileException("Lambda expected");
                 a = new AmbiguousName(loc, new String[] { names[0] });
             } else {
-                a = this.parseExpressionOrType();
+                a = this.peek("@") ? this.parseType() : this.parseExpressionOrType();
             }
 
             // '(' FormalParameterList ')'
@@ -3308,25 +3422,60 @@ class Parser {
                 return new LambdaExpression(loc, parameters, this.parseLambdaBody());
             }
 
+            List<Type> bounds = new ArrayList<>();
+            if (a instanceof CastBounds) {
+                bounds.addAll(((CastBounds) a).bounds);
+                a = bounds.remove(0);
+            }
+            while (this.peekRead("&")) bounds.add(this.parseType());
+
             // '(' atom ')'
             this.read(")");
 
             if (
-                this.peekLiteral()
+                // Parse the entire atom before deciding: "(int.class)" and "(int[].class)"
+                // are parenthesized values, while "(int) -x" is a primitive cast.
+                !bounds.isEmpty()
+                || a instanceof PrimitiveType
+                || a instanceof ArrayType
+                || this.peekLiteral()
                 || this.peek(TokenType.IDENTIFIER)
                 || this.peek("(", "~", "!") != -1
                 || this.peek("this", "super", "new") != -1
             ) {
                 // '(' Expression ')' UnaryExpression
+                if (a instanceof BinaryOperation && "&".equals(((BinaryOperation) a).operator)) {
+                    this.intersectionBounds(a, bounds);
+                    a = bounds.remove(0);
+                }
                 return new Cast(
                     this.location(),                                         // location
                     a.toTypeOrCompileException(),                            // targetType
-                    this.parseUnaryExpression().toRvalueOrCompileException() // value
+                    bounds.toArray(new Type[bounds.size()]),
+                    this.peek(TokenType.IDENTIFIER) && this.peekNextButOne("->")
+                        ? this.parseLambdaExpression() : this.parseUnaryExpression().toRvalueOrCompileException()
                 );
             }
 
             // '(' Expression ')'
             return new ParenthesizedExpression(a.getLocation(), a.toRvalueOrCompileException());
+        }
+
+        if (this.peek("<")) {
+            TypeArgument[] arguments = this.parseTypeArgumentsOpt();
+            if (this.peek("this", "super") != -1) {
+                boolean alternate = this.peekRead("this");
+                if (!alternate) this.read("super");
+                ConstructorInvocation invocation = alternate
+                    ? new AlternateConstructorInvocation(this.location(), this.parseArguments())
+                    : new SuperConstructorInvocation(this.location(), null, this.parseArguments());
+                invocation.typeArguments = arguments;
+                return invocation;
+            }
+            String name = this.read(TokenType.IDENTIFIER);
+            MethodInvocation invocation = new MethodInvocation(this.location(), null, name, this.parseArguments());
+            invocation.typeArguments = arguments;
+            return invocation;
         }
 
         if (this.peekLiteral()) {
@@ -3401,6 +3550,7 @@ class Parser {
         }
 
         if (this.peekRead("super")) {
+            if (this.peek("::")) return this.parseSuperReference(null);
             if (this.peek("(")) {
 
                 // 'super' Arguments              (JLS7 8.8.7.1 Unqualified superclass constructor invocation)
@@ -3411,15 +3561,14 @@ class Parser {
                 );
             }
             this.read(".");
+            TypeArgument[] typeArguments = this.parseTypeArgumentsOpt();
             String name = this.read(TokenType.IDENTIFIER);
             if (this.peek("(")) {
 
                 // 'super' '.' Identifier Arguments              Superclass method invocation
-                return new SuperclassMethodInvocation(
-                    this.location(),      // location
-                    name,                 // methodName
-                    this.parseArguments() // arguments
-                );
+                SuperclassMethodInvocation invocation = new SuperclassMethodInvocation(this.location(), name, this.parseArguments());
+                invocation.typeArguments = typeArguments;
+                return invocation;
             } else {
 
                 // 'super' '.' Identifier                        Superclass field access
@@ -3434,11 +3583,10 @@ class Parser {
         // 'new'
         if (this.peekRead("new")) {
             Location location = this.location();
-            Type     type     = this.parseType();
-            if (type instanceof ArrayType) {
-                // 'new' ArrayType ArrayInitializer
-                return new NewInitializedArray(location, (ArrayType) type, this.parseArrayInitializer());
-            }
+            TypeArgument[] constructorTypeArguments = this.parseTypeArgumentsOpt();
+            List<Annotation> annotations = new ArrayList<>();
+            while (this.peek("@")) annotations.add(this.parseAnnotation());
+            Type type = this.parseTypeAtom(annotations.toArray(new Annotation[annotations.size()]));
             if (type instanceof ReferenceType && this.peek("(")) {
                 // 'new' ReferenceType Arguments [ ClassBody ]
                 Rvalue[] arguments = this.parseArguments();
@@ -3449,29 +3597,48 @@ class Parser {
                         type             // baseType
                     );
                     this.parseClassBody(anonymousClassDeclaration);
-                    return new NewAnonymousClassInstance(
+                    NewAnonymousClassInstance creation = new NewAnonymousClassInstance(
                         location,                  // location
                         (Rvalue) null,             // qualification
                         anonymousClassDeclaration, // anonymousClassDeclaration
                         arguments                  // arguments
                     );
+                    creation.typeArguments = constructorTypeArguments;
+                    return creation;
                 } else {
                     // 'new' ReferenceType Arguments
-                    return new NewClassInstance(
+                    NewClassInstance creation = new NewClassInstance(
                         location,      // location
                         (Rvalue) null, // qualification
                         type,          // type
                         arguments      // arguments
                     );
+                    creation.typeArguments = constructorTypeArguments;
+                    return creation;
                 }
             }
-            // 'new' Type DimExprs { '[]' }
-            return new NewArray(
-                location,               // location
-                type,                   // type
-                this.parseDimExprs(),   // dimExprs
-                this.parseBracketsOpt() // dims
-            );
+            if (constructorTypeArguments != null) throw this.compileException("Array creation cannot have constructor type arguments");
+            List<Rvalue> sizes = new ArrayList<>();
+            List<Annotation[]> dimensions = new ArrayList<>();
+            boolean empty = false;
+            while (this.peek("@", "[") != -1) {
+                List<Annotation> dimension = new ArrayList<>();
+                while (this.peek("@")) dimension.add(this.parseAnnotation());
+                dimensions.add(dimension.toArray(new Annotation[dimension.size()]));
+                this.read("[");
+                if (this.peekRead("]")) { empty = true; continue; }
+                if (empty) throw this.compileException("Array size follows an empty dimension");
+                sizes.add(this.parseExpression().toRvalueOrCompileException());
+                this.read("]");
+            }
+            if (dimensions.isEmpty()) throw this.compileException("Array dimension expected");
+            if (sizes.isEmpty()) {
+                for (int i = dimensions.size() - 1; i >= 0; i--) type = new ArrayType(type, dimensions.get(i));
+                return new NewInitializedArray(location, (ArrayType) type, this.parseArrayInitializer());
+            }
+            NewArray creation = new NewArray(location, type, sizes.toArray(new Rvalue[sizes.size()]), dimensions.size() - sizes.size());
+            creation.dimensionAnnotations = dimensions.toArray(new Annotation[dimensions.size()][]);
+            return creation;
         }
 
         // PrimitiveType
@@ -3530,23 +3697,39 @@ class Parser {
      *     | Identifier Arguments
      * </pre>
      */
+    /** Parser-only carrier, consumed by the enclosing cast before an AST is returned. */
+    private static final class CastBounds extends Type {
+        final List<Type> bounds;
+        CastBounds(Location location, List<Type> bounds) { super(location); this.bounds = bounds; }
+        @Override public String toString() { return Java.join(this.bounds.toArray(), " & "); }
+        @Override @Nullable public <R, EX extends Throwable> R accept(Visitor.AtomVisitor<R, EX> visitor) throws EX {
+            return visitor.visitType(this);
+        }
+        @Override @Nullable public <R, EX extends Throwable> R accept(Visitor.TypeVisitor<R, EX> visitor) {
+            throw new AssertionError("Unconsumed cast bounds");
+        }
+    }
+
+    private void intersectionBounds(Atom atom, List<Type> bounds) throws CompileException {
+        if (atom instanceof BinaryOperation && "&".equals(((BinaryOperation) atom).operator)) {
+            this.intersectionBounds(((BinaryOperation) atom).lhs, bounds);
+            this.intersectionBounds(((BinaryOperation) atom).rhs, bounds);
+        } else bounds.add(atom.toTypeOrCompileException());
+    }
+
     public Atom
     parseSelector(Atom atom) throws CompileException, IOException {
         if (this.peekRead(".")) {
 
-            // Parse and ignore type arguments.
-            this.parseTypeArgumentsOpt();
+            TypeArgument[] typeArguments = this.parseTypeArgumentsOpt();
 
             if (this.peek().type == TokenType.IDENTIFIER) {
                 String identifier = this.read(TokenType.IDENTIFIER);
                 if (this.peek("(")) {
                     // '.' Identifier Arguments
-                    return new MethodInvocation(
-                        this.location(),                   // location
-                        atom.toRvalueOrCompileException(), // target
-                        identifier,                        // methodName
-                        this.parseArguments()              // arguments
-                    );
+                    MethodInvocation invocation = new MethodInvocation(this.location(), atom.toRvalueOrCompileException(), identifier, this.parseArguments());
+                    invocation.typeArguments = typeArguments;
+                    return invocation;
                 }
                 // '.' Identifier
                 return new FieldAccessExpression(
@@ -3564,6 +3747,7 @@ class Parser {
                 );
             }
             if (this.peekRead("super")) {
+                if (this.peek("::")) return this.parseSuperReference(atom.toTypeOrCompileException());
                 Location location = this.location();
                 if (this.peek("(")) {
 
@@ -3576,14 +3760,16 @@ class Parser {
                     );
                 }
                 this.read(".");
+                TypeArgument[] superTypeArguments = this.parseTypeArgumentsOpt();
                 String identifier = this.read(TokenType.IDENTIFIER);
 
                 if (this.peek("(")) {
 
                     // '.' 'super' '.' Identifier Arguments
                     // Qualified superclass method invocation (JLS7 15.12.1.1.4) (LHS is a ClassName).
-                    // TODO: Qualified superclass method invocation
-                    throw this.compileException("Qualified superclass method invocation NYI");
+                    SuperclassMethodInvocation invocation = new SuperclassMethodInvocation(location, atom.toTypeOrCompileException(), identifier, this.parseArguments());
+                    invocation.typeArguments = superTypeArguments;
+                    return invocation;
                 } else {
 
                     // '.' 'super' '.' Identifier
@@ -3599,12 +3785,17 @@ class Parser {
                 // '.' 'new' Identifier Arguments [ ClassBody ]
                 Rvalue   lhs        = atom.toRvalueOrCompileException();
                 Location location   = this.location();
+                TypeArgument[] constructorArguments = this.parseTypeArgumentsOpt();
+                List<Annotation> annotations = new ArrayList<>();
+                while (this.peek("@")) annotations.add(this.parseAnnotation());
                 String   identifier = this.read(TokenType.IDENTIFIER);
-                Type     type       = new RvalueMemberType(
+                RvalueMemberType type = new RvalueMemberType(
                     location,  // location
                     lhs,       // rValue
                     identifier // identifier
                 );
+                type.typeArguments = this.parseTypeArgumentsOpt();
+                type.annotations = annotations.toArray(new Annotation[annotations.size()]);
                 Rvalue[] arguments = this.parseArguments();
                 if (this.peek("{")) {
                     // '.' 'new' Identifier Arguments ClassBody (LHS is an Rvalue)
@@ -3613,20 +3804,14 @@ class Parser {
                         type             // baseType
                     );
                     this.parseClassBody(anonymousClassDeclaration);
-                    return new NewAnonymousClassInstance(
-                        location,                  // location
-                        lhs,                       // qualification
-                        anonymousClassDeclaration, // anonymousClassDeclaration
-                        arguments                  // arguments
-                    );
+                    NewAnonymousClassInstance result = new NewAnonymousClassInstance(location, lhs, anonymousClassDeclaration, arguments);
+                    result.typeArguments = constructorArguments;
+                    return result;
                 } else {
                     // '.' 'new' Identifier Arguments (LHS is an Rvalue)
-                    return new NewClassInstance(
-                        location, // location
-                        lhs,      // qualification
-                        type,     // referenceType
-                        arguments // arguments
-                    );
+                    NewClassInstance result = new NewClassInstance(location, lhs, type, arguments);
+                    result.typeArguments = constructorArguments;
+                    return result;
                 }
             }
             if (this.peekRead("class")) {
@@ -3648,6 +3833,16 @@ class Parser {
             );
         }
         throw this.compileException("Unexpected token '" + this.peek().value + "' in selector");
+    }
+
+    private MethodReference parseSuperReference(@Nullable Type qualification) throws CompileException, IOException {
+        this.read("::");
+        TypeArgument[] arguments = this.parseTypeArgumentsOpt();
+        MethodReference reference = new MethodReference(this.location(), new ThisReference(this.location()), this.read(TokenType.IDENTIFIER));
+        reference.superReference = true;
+        reference.superQualification = qualification;
+        reference.typeArguments = arguments;
+        return reference;
     }
 
     /**

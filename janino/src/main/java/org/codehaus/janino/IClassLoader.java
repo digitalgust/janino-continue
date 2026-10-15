@@ -124,6 +124,9 @@ class IClassLoader {
     public IClassLoader
     getParentIClassLoader() { return this.parentIClassLoader; }
 
+    /** Whether classes should be delegated before consulting this loader. */
+    protected boolean delegateToParent() { return true; }
+
     /**
      * This method must be called by the constructor of the <em>derived</em> class. (The reason being is that this
      * method invokes abstract {@link #loadIClass(String)} which will not work until the derived class is constructed.)
@@ -278,7 +281,7 @@ class IClassLoader {
 
         // Ask parent IClassLoader first.
         @SuppressWarnings("null") boolean hasParentIClassLoader = this.parentIClassLoader != null;
-        if (hasParentIClassLoader) {
+        if (hasParentIClassLoader && this.delegateToParent()) {
             IClass res = this.parentIClassLoader.loadIClass(fieldDescriptor);
             if (res != null) return res;
         }
@@ -424,7 +427,7 @@ class IClassLoader {
     public synchronized IClass
     getArrayIClass(IClass componentType) {
 
-        if (this.parentIClassLoader != null) return this.parentIClassLoader.getArrayIClass(componentType);
+        if (this.parentIClassLoader != null && this.delegateToParent()) return this.parentIClassLoader.getArrayIClass(componentType);
 
         IClass result = (IClass) this.arrayIClasses.get(componentType);
         if (result != null) return result;

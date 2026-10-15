@@ -173,6 +173,9 @@ class AbstractCompiler implements ICompiler {
     @Override public void
     setDebugSource(boolean value) { this.debugSource = value; }
 
+    @Override public void setParameters(boolean value) { this.parameters = value; }
+    protected boolean parameters;
+
     @Override public void
     setSourceVersion(int version) { this.sourceVersion = version; }
 

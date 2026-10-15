@@ -102,6 +102,9 @@ interface ICompiler {
      */
     void setDebugSource(boolean value);
 
+    /** Enables Java 8 MethodParameters metadata, equivalent to javac's {@code -parameters}. */
+    void setParameters(boolean value);
+
     /**
      * Specifies the version of source code accepted, in analogy with JAVAC's {@code -source} command line option.
      * May be ignored by an implementation (e.g. the {@code janino} implementation always accepts the language features

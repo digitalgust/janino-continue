@@ -176,6 +176,19 @@ class IClass implements ITypeVariableOrIClass {
      */
     protected abstract ITypeVariable[] getITypeVariables2() throws CompileException;
 
+    /** Generic bounds keyed by the declaration's type variable names. */
+    public Map<String, GenericType[]> getTypeParameterBounds() throws CompileException { return java.util.Collections.emptyMap(); }
+
+    /** Direct supertypes with their declared type arguments, where available. */
+    public GenericType[]
+    getGenericSupertypes() throws CompileException {
+        List<GenericType> result = new ArrayList<>();
+        IClass superclass = this.getSuperclass();
+        if (superclass != null) result.add(new GenericType.Raw(superclass));
+        for (IClass iface : this.getInterfaces()) result.add(new GenericType.Raw(iface));
+        return result.toArray(new GenericType[result.size()]);
+    }
+
     /**
      * Returns all the constructors declared by the class represented by the type. If the class has a default
      * constructor, it is included.
@@ -190,6 +203,11 @@ class IClass implements ITypeVariableOrIClass {
         return (this.declaredIConstructorsCache = this.getDeclaredIConstructors2());
     }
     @Nullable private IConstructor[] declaredIConstructorsCache;
+
+    /** Constructor lookup may discard impossible arities before resolving optional signature dependencies. */
+    public IConstructor[] getDeclaredIConstructors(int argumentCount) throws CompileException {
+        return this.getDeclaredIConstructors();
+    }
 
     /**
      * The uncached version of {@link #getDeclaredIConstructors()} which must be implemented by derived classes.
@@ -223,7 +241,7 @@ class IClass implements ITypeVariableOrIClass {
      *
      * @return an array of {@link IMethod}s that must not be modified
      */
-    public final IMethod[]
+    public IMethod[]
     getDeclaredIMethods(String methodName) {
         Map<String, Object> dimc = this.declaredIMethodCache;
         if (dimc == null) {
@@ -397,7 +415,7 @@ class IClass implements ITypeVariableOrIClass {
      *
      * @return {@code null} iff this {@link IClass} does not declare an {@link IField} with that name
      */
-    @Nullable public final IField
+    @Nullable public IField
     getDeclaredIField(String name) { return (IField) this.getDeclaredIFieldsCache().get(name); }
 
     /**
@@ -799,6 +817,11 @@ class IClass implements ITypeVariableOrIClass {
     private static final IClass[]                ZERO_ICLASSES   = new IClass[0];
     private void
     findMemberType(@Nullable String name, Collection<IClass> result) throws CompileException {
+        this.findMemberType(name, result, true);
+    }
+
+    private void
+    findMemberType(@Nullable String name, Collection<IClass> result, boolean enclosing) throws CompileException {
 
         // Search for a type with the given name in the current class.
         IClass[] memberTypes = this.getDeclaredIClasses();
@@ -821,14 +844,15 @@ class IClass implements ITypeVariableOrIClass {
         // Examine superclass.
         {
             IClass superclass = this.getSuperclass();
-            if (superclass != null) superclass.findMemberType(name, result);
+            if (superclass != null) superclass.findMemberType(name, result, false);
         }
 
         // Examine interfaces.
-        for (IClass i : this.getInterfaces()) i.findMemberType(name, result);
+        for (IClass i : this.getInterfaces()) i.findMemberType(name, result, false);
 
-        // Examine enclosing type declarations.
-        {
+        // Enclosing types of a supertype are not inherited members of this type.
+        // Lexical enclosing lookup is only the fallback for the original query.
+        if (enclosing && (name == null || result.isEmpty())) {
             IClass declaringIClass = this.getDeclaringIClass();
             IClass outerIClass     = this.getOuterIClass();
             if (declaringIClass != null) {
@@ -890,6 +914,15 @@ class IClass implements ITypeVariableOrIClass {
      */
     public abstract
     class IInvocable implements IMember {
+        @Nullable public GenericType[] getGenericParameterTypes() throws CompileException { return null; }
+        /** Declared exception types before class/method variable substitution. */
+        @Nullable public GenericType[] getGenericThrownExceptions() throws CompileException { return null; }
+        @Nullable public String[] getTypeParameterNames() { return null; }
+        /** Bounds of method variables, kept separate from the erased invocation descriptor. */
+        public Map<String, GenericType[]> getTypeParameterBounds() throws CompileException {
+            return java.util.Collections.emptyMap();
+        }
+
 
         private boolean argsNeedAdjust;
 
@@ -978,10 +1011,10 @@ class IClass implements ITypeVariableOrIClass {
         isMoreSpecificThan(IInvocable that) throws CompileException {
             IClass.LOGGER.entering(null, "isMoreSpecificThan", that);
 
-            // a variable-length argument is always less specific than a fixed arity.
+            // A varargs declaration used in a fixed-arity phase is an ordinary array parameter.
             final boolean thatIsVarargs;
 
-            if ((thatIsVarargs = that.isVarargs()) != this.isVarargs()) {
+            if ((thatIsVarargs = that.isVarargs() && that.argsNeedAdjust()) != (this.isVarargs() && this.argsNeedAdjust())) {
 
                 // Only one of the two is varargs.
                 return thatIsVarargs;
@@ -1164,10 +1197,16 @@ class IClass implements ITypeVariableOrIClass {
     public abstract
     class IMethod extends IInvocable {
 
+        /** Generic source metadata, available even when the caller is another compilation unit. */
+        @Nullable public GenericType getGenericReturnType() throws CompileException { return null; }
+
         /**
          * @return Whether this method is STATIC
          */
         public abstract boolean isStatic();
+
+        /** @return Whether this method is final */
+        public boolean isFinal() { return false; }
 
         /**
          * @return Whether this method is ABSTRACT
@@ -1258,6 +1297,7 @@ class IClass implements ITypeVariableOrIClass {
      */
     public abstract
     class IField implements IMember {
+        @Nullable public GenericType getGenericType() throws CompileException { return null; }
 
         // Implement IMember.
         @Override public abstract Access getAccess();

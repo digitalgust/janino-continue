@@ -661,6 +661,117 @@ class CompilerTest {
         Assert.assertEquals(77, cl.loadClass("pkg1.A").getDeclaredMethod("meth").invoke(null));
     }
 
+    @Test public void
+    testExplicitCustomRuntimeSource() throws Exception {
+        ICompiler compiler = this.compilerFactory.newCompiler();
+        Map<String, byte[]> classes = new HashMap<>();
+        compiler.setClassFileCreator(new MapResourceCreator(classes));
+        compiler.compile(new Resource[] {
+            new StringResource("app/Use.java", "package app; public class Use {"
+                + "public static int run() { return java.minijvmprobe.Event.VALUE; }}"),
+            new StringResource("java/minijvmprobe/Event.java", "package java.minijvmprobe; public class Event {"
+                + "public static final int VALUE = 37; }"),
+        });
+        Assert.assertTrue(classes.containsKey("java/minijvmprobe/Event.class"));
+        ClassLoader cl = new ResourceFinderClassLoader(new MapResourceFinder(classes), ClassLoader.getSystemClassLoader());
+        Assert.assertEquals(37, cl.loadClass("app.Use").getDeclaredMethod("run").invoke(null));
+    }
+
+    @Test public void
+    testBinarySignatureRefersToCurrentSource() throws Exception {
+        Map<String, byte[]> initial = new HashMap<>();
+        ICompiler compiler = this.compilerFactory.newCompiler();
+        compiler.setClassFileCreator(new MapResourceCreator(initial));
+        compiler.compile(new Resource[] {
+            new StringResource("app/Source.java", "package app; public class Source {}"),
+            new StringResource("lib/Api.java", "package lib; public class Api {"
+                + "public static app.Source echo(app.Source s) { return s; }}"),
+        });
+        java.nio.file.Path root = java.nio.file.Files.createTempDirectory("janino-binary-source-");
+        java.nio.file.Path binary = root.resolve("lib/Api.class");
+        try {
+            java.nio.file.Files.createDirectories(binary.getParent());
+            java.nio.file.Files.write(binary, initial.get("lib/Api.class"));
+            Map<String, byte[]> classes = new HashMap<>();
+            compiler = this.compilerFactory.newCompiler();
+            compiler.setClassPath(new File[] { root.toFile() });
+            compiler.setClassFileCreator(new MapResourceCreator(classes));
+            compiler.compile(new Resource[] {
+                new StringResource("app/Source.java", "package app; public class Source {public int n=37;}"),
+                new StringResource("app/Use.java", "package app; public class Use {"
+                    + "public static int run() { return lib.Api.echo(new Source()).n; }}"),
+            });
+            classes.put("lib/Api.class", initial.get("lib/Api.class"));
+            ClassLoader cl = new ResourceFinderClassLoader(new MapResourceFinder(classes), ClassLoader.getSystemClassLoader());
+            Assert.assertEquals(37, cl.loadClass("app.Use").getDeclaredMethod("run").invoke(null));
+        } finally {
+            java.nio.file.Files.deleteIfExists(binary);
+            java.nio.file.Files.deleteIfExists(binary.getParent());
+            java.nio.file.Files.deleteIfExists(root);
+        }
+    }
+
+    @Test public void
+    testGeneratedInterfaceAndEnumAcceptedByJavac() throws Exception {
+        java.nio.file.Path root = java.nio.file.Files.createTempDirectory("janino-interface-init-");
+        try {
+            ICompiler compiler = this.compilerFactory.newCompiler();
+            compiler.setTargetVersion(8);
+            compiler.setDestinationDirectory(root.toFile(), true);
+            compiler.compile(new Resource[] {
+                new StringResource("I.java", "public interface I {Object VALUE=new Object();"
+                    + "<T> T echo(Class<? extends T> type,String... args);}"),
+                new StringResource("E.java", "public enum E {A}"),
+                new StringResource("Owner.java", "public class Owner {public interface Handler {void run();}public enum Choice {A}"
+                    + "public static class Visitor<E extends Exception>{public void visit()throws E{}}}"),
+            });
+            java.nio.file.Path source = root.resolve("Use.java");
+            java.nio.file.Files.write(source, ("public class Use implements I {"
+                + "public <T> T echo(Class<? extends T> type,String... args){return null;}"
+                + "public int value(E e){switch(e){case A:return 1;default:return 0;}}"
+                + "java.util.EnumSet<E> values=java.util.EnumSet.noneOf(E.class);"
+                + "java.util.EnumSet<Owner.Choice> choices=java.util.EnumSet.noneOf(Owner.Choice.class);"
+                + "Owner.Handler handler=new Owner.Handler(){public void run(){}};"
+                + "Owner.Visitor<java.io.IOException> visitor=new Owner.Visitor<java.io.IOException>(){"
+                + "public void visit()throws java.io.IOException{}};}").getBytes("UTF-8"));
+            Assert.assertEquals(0, javax.tools.ToolProvider.getSystemJavaCompiler().run(
+                null, null, null, "-classpath", root.toString(), "-d", root.toString(), source.toString()
+            ));
+        } finally {
+            for (String name : new String[] {
+                "I.class", "E.class", "Owner.class", "Owner$Handler.class", "Owner$Choice.class", "Owner$Visitor.class",
+                "Use.class", "Use$1.class", "Use$2.class", "Use$3.class", "Use.java"
+            }) {
+                java.nio.file.Files.deleteIfExists(root.resolve(name));
+            }
+            java.nio.file.Files.deleteIfExists(root);
+        }
+    }
+
+    @Test public void
+    testOutputOnClassPathKeepsSourceIdentity() throws Exception {
+        java.nio.file.Path root = java.nio.file.Files.createTempDirectory("janino-source-identity-");
+        try {
+            ICompiler compiler = this.compilerFactory.newCompiler();
+            compiler.setClassPath(new File[] { root.toFile() });
+            compiler.setDestinationDirectory(root.toFile(), true);
+            compiler.compile(new Resource[] {
+                new StringResource("A.java", "public class A {public static A make(){return B.id(new A());}}"),
+                new StringResource("B.java", "public class B {public static A id(A a){return a;}}"),
+                new StringResource("C.java", "public class C {public static boolean run(){return B.id(new A())!=null;}}"),
+            });
+            java.net.URLClassLoader cl = new java.net.URLClassLoader(
+                new java.net.URL[] { root.toUri().toURL() }, ClassLoader.getSystemClassLoader());
+            try { Assert.assertEquals(Boolean.TRUE, cl.loadClass("C").getDeclaredMethod("run").invoke(null)); }
+            finally { cl.close(); }
+        } finally {
+            for (String name : new String[] { "A.class", "B.class", "C.class" }) {
+                java.nio.file.Files.deleteIfExists(root.resolve(name));
+            }
+            java.nio.file.Files.deleteIfExists(root);
+        }
+    }
+
     private static void
     assertLessThan(@Nullable String message, int expected, int actual) {
         Assert.assertTrue(

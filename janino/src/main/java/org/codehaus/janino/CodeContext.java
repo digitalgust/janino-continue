@@ -26,6 +26,8 @@
 
 package org.codehaus.janino;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -60,6 +62,49 @@ import org.codehaus.janino.util.ClassFile.StackMapTableAttribute.VerificationTyp
  */
 public
 class CodeContext {
+
+    private final List<CodeTypeAnnotation> codeTypeAnnotations = new ArrayList<>();
+
+    /** A type annotation tied to relocatable code, rather than a speculative integer offset. */
+    private final class CodeTypeAnnotation extends ClassFile.TypeAnnotation {
+        final boolean visible;
+        final Offset offset;
+        final Java.LocalVariableSlot local;
+        final int argument;
+        CodeTypeAnnotation(boolean visible, ClassFile.TypeAnnotation annotation, Offset offset, Java.LocalVariableSlot local, int argument) {
+            super(annotation.targetType, annotation.targetIndex, annotation.targetPath, annotation.annotation);
+            this.visible = visible;
+            this.offset = offset;
+            this.local = local;
+            this.argument = argument;
+        }
+        boolean live() {
+            return this.offset.offset >= 0 && (this.local == null || this.local.getEnd() != null
+                && this.local.getEnd().offset > this.offset.offset);
+        }
+        @Override public void store(DataOutputStream dos) throws IOException {
+            dos.writeByte(this.targetType);
+            if (this.targetType == 0x40 || this.targetType == 0x41) {
+                dos.writeShort(1);
+                dos.writeShort(this.offset.offset);
+                dos.writeShort(this.local.getEnd().offset - this.offset.offset);
+                dos.writeShort(this.local.getSlotIndex());
+            } else {
+                dos.writeShort(this.targetType == 0x42 ? this.argument : this.offset.offset);
+                if (this.targetType >= 0x47) dos.writeByte(this.argument);
+            }
+            dos.writeByte(this.targetPath.length / 2);
+            dos.write(this.targetPath);
+            this.annotation.store(dos);
+        }
+    }
+
+    int exceptionTableEntryCount() { return this.exceptionTableEntries.size(); }
+
+    void addCodeTypeAnnotation(boolean visible, ClassFile.TypeAnnotation annotation, Offset offset,
+        @Nullable Java.LocalVariableSlot local, int argument) {
+        this.codeTypeAnnotations.add(new CodeTypeAnnotation(visible, annotation, offset, local, argument));
+    }
 
     private static final boolean SUPPRESS_STACK_MAP_TABLE = Boolean.getBoolean(CodeContext.class.getName() + ".suppressStackMapTable");
 
@@ -269,6 +314,15 @@ class CodeContext {
         }
 
         List<ClassFile.AttributeInfo> attributes = new ArrayList<>();
+
+        for (boolean visible : this.codeTypeAnnotations.isEmpty() ? new boolean[0] : new boolean[] { true, false }) {
+            ClassFile.TypeAnnotationsAttribute annotations = new ClassFile.TypeAnnotationsAttribute(this.classFile.addConstantUtf8Info(
+                visible ? "RuntimeVisibleTypeAnnotations" : "RuntimeInvisibleTypeAnnotations"));
+            for (CodeTypeAnnotation annotation : this.codeTypeAnnotations) {
+                if (annotation.visible == visible && annotation.live()) annotations.getTypeAnnotations().add(annotation);
+            }
+            if (!annotations.getTypeAnnotations().isEmpty()) attributes.add(annotations);
+        }
 
         // Add "LineNumberTable" attribute.
         if (debugLines) {
@@ -723,11 +777,9 @@ class CodeContext {
 
         assert dst instanceof CodeContext.BasicBlock;
 
-        if (dst.offset == -1) {
-            if (dst.stackMap == null) {
-                dst.stackMap = this.currentInserter.getStackMap();
-            }
-        }
+        // Conditional emitters merge the state after popping their operands. Unconditional
+        // branches preserve the current operand stack and must merge every incoming edge.
+        if (opcode == Opcode.GOTO || opcode == Opcode.GOTO_W) dst.mergeStackMap(this.currentInserter.getStackMap());
 
         @SuppressWarnings("deprecation") int opcodeJsr = Opcode.JSR;
         if (
@@ -1084,6 +1136,11 @@ class CodeContext {
         public void
         setStackMap(StackMap stackMap) {
             this.stackMap = stackMap;
+        }
+
+        void
+        mergeStackMap(StackMap stackMap) {
+            this.stackMap = CodeContext.mergeStackMaps(this.stackMap, stackMap);
         }
 
         /**

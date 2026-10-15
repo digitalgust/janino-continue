@@ -222,11 +222,12 @@ class Compiler extends AbstractCompiler {
         this.benchmark.beginReporting();
         try {
 
-            final IClassLoader
-            iClassLoader = new CompilerIClassLoader(this.sourceFinder, this.classFileFinder, this.getIClassLoader());
+            this.parsedCompilationUnits.clear();
+            final CompilerIClassLoader
+            iClassLoader = new CompilerIClassLoader(this.sourceFinder, this.classFileFinder,
+                new PathResourceFinder(this.classPath), this.getIClassLoader());
 
             // Initialize compile time fields.
-            this.parsedCompilationUnits.clear();
 
             // Parse all source files.
             for (Resource sourceResource : sourceResources) {
@@ -241,12 +242,15 @@ class Compiler extends AbstractCompiler {
                     iClassLoader
                 );
                 uc.setTargetVersion(this.targetVersion);
+                uc.setParameters(this.parameters);
                 uc.setCompileErrorHandler(this.compileErrorHandler);
                 uc.setWarningHandler(this.warningHandler);
                 uc.options(this.options);
 
                 this.parsedCompilationUnits.add(uc);
             }
+
+            iClassLoader.initialize();
 
             // Compile all parsed compilation units. The vector of parsed CUs may grow while they are being compiled,
             // but eventually all CUs will be compiled.
@@ -261,6 +265,7 @@ class Compiler extends AbstractCompiler {
                 }
 
                 unitCompiler.setTargetVersion(this.targetVersion);
+                unitCompiler.setParameters(this.parameters);
                 unitCompiler.setCompileErrorHandler(this.compileErrorHandler);
                 unitCompiler.setWarningHandler(this.warningHandler);
 
@@ -441,8 +446,7 @@ class Compiler extends AbstractCompiler {
             // JVM 1.0-1.8; BOOTCLASSPATH supported:
             classPathResourceFinder = new MultiResourceFinder(Arrays.asList(
                 new PathResourceFinder(bcp),
-                new JarDirectoriesResourceFinder(this.extensionDirectories),
-                new PathResourceFinder(this.classPath)
+                new JarDirectoriesResourceFinder(this.extensionDirectories)
             ));
         } else {
 
@@ -493,8 +497,7 @@ class Compiler extends AbstractCompiler {
 
             classPathResourceFinder = new MultiResourceFinder(Arrays.asList(
                 rf,
-                new JarDirectoriesResourceFinder(this.extensionDirectories),
-                new PathResourceFinder(this.classPath)
+                new JarDirectoriesResourceFinder(this.extensionDirectories)
             ));
         }
 
@@ -504,10 +507,11 @@ class Compiler extends AbstractCompiler {
     /**
      * A specialized {@link IClassLoader} that loads {@link IClass}es from the following sources:
      * <ol>
+     *   <li>The parent loader's platform and extension classes
      *   <li>An already-parsed compilation unit
+     *   <li>A binary on the application class path, resolved through this loader
      *   <li>A class file in the output directory (if existent and younger than source file)
      *   <li>A source file in any of the source path directories
-     *   <li>The parent class loader
      * </ol>
      * <p>
      *   Notice that the {@link CompilerIClassLoader} is an inner class of {@link Compiler} and heavily uses {@link
@@ -519,23 +523,42 @@ class Compiler extends AbstractCompiler {
 
         private final ResourceFinder           sourceFinder;
         @Nullable private final ResourceFinder classFileFinder;
+        private final ResourceFinder           classPathFinder;
+        private boolean rebuildingPlatform;
 
         /**
          * @param sourceFinder       Where to look for more source files
          * @param classFileFinder    Where to look for previously generated .class resources, or {@link
          *                           #FIND_NEXT_TO_SOURCE_FILE}
+         * @param classPathFinder    Where to look for application binaries
          * @param parentIClassLoader {@link IClassLoader} through which {@link IClass}es are to be loaded
          */
         CompilerIClassLoader(
             ResourceFinder           sourceFinder,
             @Nullable ResourceFinder classFileFinder,
+            ResourceFinder           classPathFinder,
             IClassLoader             parentIClassLoader
         ) {
             super(parentIClassLoader);
             this.sourceFinder    = sourceFinder;
             this.classFileFinder = classFileFinder;
-            super.postConstruct();
+            this.classPathFinder = classPathFinder;
         }
+
+        void initialize() {
+            for (UnitCompiler uc : Compiler.this.parsedCompilationUnits) {
+                Java.AbstractCompilationUnit acu = uc.getAbstractCompilationUnit();
+                if (!(acu instanceof Java.CompilationUnit)) continue;
+                Java.PackageDeclaration pkg = ((Java.CompilationUnit) acu).packageDeclaration;
+                if (pkg != null && (pkg.packageName.equals("java") || pkg.packageName.startsWith("java."))) {
+                    this.rebuildingPlatform = true;
+                    break;
+                }
+            }
+            this.postConstruct();
+        }
+
+        @Override protected boolean delegateToParent() { return !this.rebuildingPlatform; }
 
         /**
          * @param type                    field descriptor of the {@link IClass} to load, e.g. {@code
@@ -550,9 +573,6 @@ class Compiler extends AbstractCompiler {
             // Determine the class name.
             String className = Descriptor.toClassName(type); // E.g. "pkg1.pkg2.Outer$Inner"
             Compiler.LOGGER.log(Level.FINE, "className={0}", className);
-
-            // Do not attempt to load classes from package "java".
-            if (className.startsWith("java.")) return null;
 
             // Determine the name of the top-level class. E.g. "pkg.$Outer$Inner" => "pkg.$Outer".
             for (
@@ -578,6 +598,26 @@ class Compiler extends AbstractCompiler {
 
                 if (idx == -1) break;
             }
+
+            if (this.rebuildingPlatform) {
+                IClass platform = this.getParentIClassLoader().loadIClass(type);
+                if (platform instanceof ClassFileIClass) {
+                    IClass rebound = new ClassFileIClass(((ClassFileIClass) platform).getClassFile(), this);
+                    this.defineIClass(rebound);
+                    return rebound;
+                }
+                if (platform != null) throw new ClassNotFoundException("Platform source compilation requires binary bootstrap classes: " + className);
+            }
+
+            // Resolve application binaries in the same loader as sources: Their signatures can
+            // refer back to explicit inputs. Also avoid reloading newly emitted output classes
+            // through a parent loader and creating a second identity for a source type.
+            Resource binary = this.classPathFinder.findResource(ClassFile.getClassFileResourceName(className));
+            if (binary != null) return this.defineIClassFromClassFileResource(binary, false, className);
+
+            // Explicit inputs may implement a custom runtime (e.g. miniJVM's java.awt).
+            // Still do not discover platform replacements implicitly from the source path.
+            if (className.startsWith("java.")) return null;
 
             // Search source path for uncompiled class.
             final Resource sourceResource = this.sourceFinder.findResource(ClassFile.getSourceResourceName(className));
@@ -605,7 +645,7 @@ class Compiler extends AbstractCompiler {
             if (classFileResource != null && sourceResource.lastModified() <= classFileResource.lastModified()) {
 
                 // The class file is up-to-date; load it.
-                return this.defineIClassFromClassFileResource(classFileResource);
+                return this.defineIClassFromClassFileResource(classFileResource, true, className);
             } else {
 
                 // Source file not yet compiled or younger than class file.
@@ -661,8 +701,8 @@ class Compiler extends AbstractCompiler {
          * Opens the given <var>classFileResource</var>, reads its contents, defines it in the {@link IClassLoader},
          * and resolves it (this step may involve loading more classes).
          */
-        private IClass
-        defineIClassFromClassFileResource(Resource classFileResource) throws ClassNotFoundException {
+        @Nullable private IClass
+        defineIClassFromClassFileResource(Resource classFileResource, boolean resolveAll, String className) throws ClassNotFoundException {
             Compiler.this.benchmark.beginReporting("Loading class file \"" + classFileResource.getFileName() + "\"");
             try {
                 InputStream is = null;
@@ -675,6 +715,9 @@ class Compiler extends AbstractCompiler {
                 } finally {
                     if (is != null) try { is.close(); } catch (IOException e) {}
                 }
+                // Windows directory lookup is case-insensitive; Java class names are not.
+                // A local "registryConfig" must not load/define RegistryConfig a second time.
+                if (!className.equals(cf.getThisClassName())) return null;
                 ClassFileIClass result = new ClassFileIClass(
                     cf,                       // classFile
                     CompilerIClassLoader.this // iClassLoader
@@ -685,7 +728,7 @@ class Compiler extends AbstractCompiler {
                 // "resolveAllClasses()", because otherwise endless recursion could
                 // occur.
                 this.defineIClass(result);
-                result.resolveAllClasses();
+                if (resolveAll) result.resolveAllClasses();
 
                 return result;
             } finally {

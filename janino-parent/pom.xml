@@ -19,19 +19,19 @@
     <!--
       If you want to enforce a particular JAVAC executable to be used, set these two properties:
     -->
-    <!-- -->
+    <!--
     <maven.compiler.executable>C:\dev\Java\adopt_openjdk-8.0.292.10-hotspot</maven.compiler.executable>
     <maven.compiler.fork>false</maven.compiler.fork>
-    <!-- -->
+    -->
   </properties>
 
   <artifactId>janino-parent</artifactId>
 
   <name>janino-parent</name>
 
-  <groupId>org.codehaus.janino</groupId>
+  <groupId>io.github.digitalgust</groupId>
   <packaging>pom</packaging>
-  <version>3.1.13-SNAPSHOT</version>
+  <version>4.0.0</version>
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -59,6 +59,15 @@
         <role>Developer</role>
       </roles>
     </developer>
+    <developer>
+      <id>digitalgust</id>
+      <name>digitalgust</name>
+      <email>digitalgust@163.com</email>
+      <roles>
+        <role>Developer</role>
+      </roles>
+      <timezone>+8</timezone>
+    </developer>
   </developers>
 
   <modules>
@@ -67,13 +76,6 @@
     <module>../janino</module>
     <module>../commons-compiler-tests</module>
   </modules>
-
-  <distributionManagement>
-    <snapshotRepository>
-      <id>ossrh</id>
-      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-    </snapshotRepository>
-  </distributionManagement>
 
   <build>
     <plugins>
@@ -153,7 +155,8 @@
         <version>2.10.4</version>
         <configuration>
           <quiet>true</quiet>
-          <javadocExecutable>C:/dev/Java/adopt_openjdk-8.0.292.10-hotspot/bin/javadoc.exe </javadocExecutable>
+          <!-- "javadocExecutable" was pinned to the original author's local JDK path and broke builds elsewhere; fall back to the JDK running Maven. -->
+          <!-- <javadocExecutable>C:/dev/Java/adopt_openjdk-8.0.292.10-hotspot/bin/javadoc.exe </javadocExecutable> -->
           <additionalparam>-Xdoclint:none</additionalparam>
         </configuration>
         <executions>
@@ -185,18 +188,6 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>2.3</version>
       </plugin>
-
-      <plugin>
-        <groupId>org.sonatype.plugins</groupId>
-        <artifactId>nexus-staging-maven-plugin</artifactId>
-        <version>1.6.13</version>
-        <extensions>true</extensions>
-        <configuration>
-           <serverId>ossrh</serverId>
-           <nexusUrl>https://oss.sonatype.org/</nexusUrl>
-           <autoReleaseAfterClose>false</autoReleaseAfterClose>
-        </configuration>
-      </plugin>
     </plugins>
 
     <pluginManagement>
@@ -204,7 +195,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-gpg-plugin</artifactId>
-          <version>1.5</version>
+          <version>1.6</version>
           <executions>
             <execution>
               <id>sign-artifacts</id>
@@ -219,17 +210,78 @@
 
   <profiles>
 
-    <!-- Signs all artifacts with GPG (oss.sonatype.org requires that). -->
+    <!--
+      Signs all artifacts with GPG and publishes them to Maven Central (Sonatype Central Portal).
+
+      Usage (from THIS directory):
+
+          mvn clean install deploy -P release
+
+      Requires a "central" <server> entry (Central Portal user token) in ~/.m2/settings.xml.
+    -->
     <profile>
-      <id>have_gpg</id>
+      <id>release</id>
       <build>
         <plugins>
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-gpg-plugin</artifactId>
           </plugin>
+
+          <!--
+            Replaces each module's POM with a flattened, standalone "consumer POM": parent reference is
+            inlined and resolved, build-internal configuration (miniJVM copy paths, dummy keystore) is
+            stripped. This is what allows the janino-parent POM itself to stay unpublished.
+          -->
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>flatten-maven-plugin</artifactId>
+            <version>1.6.0</version>
+            <configuration>
+              <flattenMode>ossrh</flattenMode>
+              <pomElements>
+                <build>remove</build>
+              </pomElements>
+            </configuration>
+            <executions>
+              <execution>
+                <id>flatten</id>
+                <phase>process-resources</phase>
+                <goals><goal>flatten</goal></goals>
+              </execution>
+              <execution>
+                <id>flatten-clean</id>
+                <phase>clean</phase>
+                <goals><goal>clean</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+
+          <!-- Publishes the reactor to https://central.sonatype.com; janino-parent and commons-compiler-tests stay private. -->
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.8.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <waitMaxTime>7200</waitMaxTime>
+              <centralBaseUrl>https://central.sonatype.com</centralBaseUrl>
+              <excludeArtifacts>
+                <artifactId>janino-parent</artifactId>
+                <artifactId>commons-compiler-tests</artifactId>
+              </excludeArtifacts>
+            </configuration>
+          </plugin>
         </plugins>
       </build>
+
+      <distributionManagement>
+        <snapshotRepository>
+          <id>central</id>
+          <url>https://central.sonatype.com/</url>
+        </snapshotRepository>
+      </distributionManagement>
     </profile>
   </profiles>
 

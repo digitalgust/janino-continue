@@ -6,6 +6,7 @@
     <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_TYPES">
         <listEntry value="2"/>
     </listAttribute>
+    <mapAttribute key="org.eclipse.debug.core.environmentVariables"/>
     <stringAttribute key="org.eclipse.jdt.junit.CONTAINER" value="=janino/src\/test\/java=/test=/true=/=/optional=/true=/=/maven.pomderived=/true=/"/>
     <booleanAttribute key="org.eclipse.jdt.junit.KEEPRUNNING_ATTR" value="false"/>
     <stringAttribute key="org.eclipse.jdt.junit.TESTNAME" value=""/>
@@ -24,5 +25,5 @@
     <stringAttribute key="org.eclipse.jdt.launching.MAIN_TYPE" value=""/>
     <stringAttribute key="org.eclipse.jdt.launching.PROJECT_ATTR" value="janino"/>
     <stringAttribute key="org.eclipse.jdt.launching.SOURCE_PATH_PROVIDER" value="org.eclipse.m2e.launchconfig.sourcepathProvider"/>
-    <stringAttribute key="org.eclipse.jdt.launching.VM_ARGUMENTS" value="-ea&#13;&#10;-Xverify:all&#13;&#10;-DxxSimpleCompiler.disassembleClassFilesToStdout=true&#13;&#10;-DxxAbstractCompiler.disassembleClassFilesToStdout=true&#13;&#10;-Dxxorg.codehaus.commons.compiler.util.Disassembler.printStackMap=true&#13;&#10;-Dxxorg.codehaus.commons.compiler.util.Disassembler.printAllOffsets=true&#13;&#10;-Dxxorg.codehaus.commons.compiler.util.Disassembler.printAllAttributes=true&#13;&#10;-Dxxorg.codehaus.commons.compiler.util.Disassembler.dumpConstantPool=true&#13;&#10;-Dxxorg.codehaus.commons.compiler.util.Disassembler.showClassPoolIndexes=true"/>
+    <stringAttribute key="org.eclipse.jdt.launching.VM_ARGUMENTS" value="-ea&#10;-Xss2m"/>
 </launchConfiguration>

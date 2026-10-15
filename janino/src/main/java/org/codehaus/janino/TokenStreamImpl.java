@@ -26,6 +26,8 @@
 package org.codehaus.janino;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.codehaus.commons.compiler.CompileException;
 import org.codehaus.commons.compiler.Location;
@@ -48,9 +50,18 @@ class TokenStreamImpl implements TokenStream {
      */
     @Nullable private String docComment;
 
-    private Token
+    @Nullable private TokenStream delegate;
+
+    // Adapt custom TokenStream implementations without extending their public interface.
+    TokenStreamImpl(Scanner scanner, TokenStream delegate) {
+        this(scanner);
+        this.delegate = delegate;
+    }
+
+    protected Token
     produceToken() throws CompileException, IOException {
 
+        if (this.delegate != null) return this.delegate.read();
         for (;;) {
             Token token = this.scanner.produce();
 
@@ -88,6 +99,30 @@ class TokenStreamImpl implements TokenStream {
     }
 
     @Nullable private Token previousToken, nextToken, nextButOneToken;
+
+    private final List<Token> furtherTokens = new ArrayList<>();
+    private int furtherTokenIndex;
+
+    /** Arbitrary lookahead for the parser's read-only type probe; original shift tokens stay intact. */
+    Token peek(int distance) throws CompileException, IOException {
+        if (distance < 0) throw new IllegalArgumentException("Negative lookahead");
+        if (distance == 0) return this.peek();
+        if (distance == 1) return this.peekNextButOne();
+        this.peekNextButOne();
+        int index = this.furtherTokenIndex + distance - 2;
+        while (this.furtherTokens.size() <= index) this.furtherTokens.add(this.produceToken());
+        return this.furtherTokens.get(index);
+    }
+
+    @Nullable private Token nextFurtherToken() {
+        if (this.furtherTokenIndex == this.furtherTokens.size()) return null;
+        Token result = this.furtherTokens.get(this.furtherTokenIndex++);
+        if (this.furtherTokenIndex == this.furtherTokens.size()) {
+            this.furtherTokens.clear(); this.furtherTokenIndex = 0;
+        }
+        return result;
+    }
+
 
     @Override public Token
     peek() throws CompileException, IOException {
@@ -139,7 +174,7 @@ class TokenStreamImpl implements TokenStream {
 
         this.previousToken   = result;
         this.nextToken       = this.nextButOneToken;
-        this.nextButOneToken = null;
+        this.nextButOneToken = this.nextFurtherToken();
         return result;
     }
 
@@ -167,6 +202,10 @@ class TokenStreamImpl implements TokenStream {
                 // that token into TWO tokens (">" and ">=", in the example).
                 // See JLS8 3.2, "Lexical Transformation", last paragraph.
                 Location loc = t.getLocation();
+                if (this.nextToken != null) {
+                    if (this.nextButOneToken != null) this.furtherTokens.add(this.furtherTokenIndex, this.nextButOneToken);
+                    this.nextButOneToken = this.nextToken;
+                }
                 this.nextToken = new Token(
                     loc.getFileName(),
                     loc.getLineNumber(),
@@ -224,7 +263,7 @@ class TokenStreamImpl implements TokenStream {
             if (!this.nextToken.value.equals(suspected)) return false;
             this.previousToken   = this.nextToken;
             this.nextToken       = this.nextButOneToken;
-            this.nextButOneToken = null;
+            this.nextButOneToken = this.nextFurtherToken();
             return true;
         }
 
@@ -245,7 +284,7 @@ class TokenStreamImpl implements TokenStream {
             if (idx == -1) return -1;
             this.previousToken   = this.nextToken;
             this.nextToken       = this.nextButOneToken;
-            this.nextButOneToken = null;
+            this.nextButOneToken = this.nextFurtherToken();
             return idx;
         }
 
@@ -267,7 +306,7 @@ class TokenStreamImpl implements TokenStream {
             if (nt.type != suspected) return null;
             this.previousToken   = this.nextToken;
             this.nextToken       = this.nextButOneToken;
-            this.nextButOneToken = null;
+            this.nextButOneToken = this.nextFurtherToken();
             return nt.value;
         }
 
@@ -289,7 +328,7 @@ class TokenStreamImpl implements TokenStream {
             if (idx != -1) {
                 this.previousToken   = this.nextToken;
                 this.nextToken       = this.nextButOneToken;
-                this.nextButOneToken = null;
+                this.nextButOneToken = this.nextFurtherToken();
             }
             return idx;
         }
@@ -329,6 +368,7 @@ class TokenStreamImpl implements TokenStream {
     @Override public void
     setWarningHandler(@Nullable WarningHandler warningHandler) {
         this.warningHandler = warningHandler;
+        if (this.delegate != null) this.delegate.setWarningHandler(warningHandler);
     }
 
     // Used for elaborate warning handling.
@@ -359,7 +399,7 @@ class TokenStreamImpl implements TokenStream {
      * Convenience method for throwing a {@link CompileException}.
      */
     protected final CompileException
-    compileException(String message) { return new CompileException(message, this.scanner.location()); }
+    compileException(String message) { return new CompileException(message, this.location()); }
 
     private static String
     join(@Nullable Object[] oa, String glue) {

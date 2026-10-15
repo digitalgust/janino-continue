@@ -486,7 +486,7 @@ class DeepCopier {
     copyWildcard(Wildcard subject) throws CompileException {
         return new Wildcard(
             subject.bounds,
-            this.copyOptionalReferenceType(subject.referenceType),
+            subject.referenceType == null ? null : this.copyType(subject.referenceType),
             this.copyAnnotations(subject.annotations)
         );
     }
@@ -671,7 +671,7 @@ class DeepCopier {
 
     public ConstructorDeclarator
     copyConstructorDeclarator(ConstructorDeclarator subject) throws CompileException {
-        return new ConstructorDeclarator(
+        ConstructorDeclarator result = new ConstructorDeclarator(
             subject.getLocation(),
             subject.getDocComment(),
             this.copyModifiers(subject.getModifiers()),
@@ -680,6 +680,8 @@ class DeepCopier {
             this.copyOptionalConstructorInvocation(subject.constructorInvocation),
             this.copyBlockStatements(DeepCopier.assertNotNull(subject.statements))
         );
+        result.setTypeParameters(this.copyOptionalTypeParameters(subject.getOptionalTypeParameters()));
+        return result;
     }
 
     public Initializer
@@ -721,12 +723,10 @@ class DeepCopier {
 
     public VariableDeclarator
     copyVariableDeclarator(VariableDeclarator subject) throws CompileException {
-        return new VariableDeclarator(
-            subject.getLocation(),
-            subject.name,
-            subject.brackets,
-            this.copyOptionalArrayInitializerOrRvalue(subject.initializer)
-        );
+        VariableDeclarator result = new VariableDeclarator(subject.getLocation(), subject.name, subject.brackets,
+            this.copyOptionalArrayInitializerOrRvalue(subject.initializer));
+        for (int i = 0; i < subject.brackets; i++) result.dimensionAnnotations[i] = this.copyAnnotations(subject.dimensionAnnotations[i]);
+        return result;
     }
 
     public BlockStatement
@@ -933,7 +933,7 @@ class DeepCopier {
 
     public Rvalue
     copyCast(Cast subject) throws CompileException {
-        return new Cast(subject.getLocation(), this.copyType(subject.targetType), this.copyRvalue(subject.value));
+        return new Cast(subject.getLocation(), this.copyType(subject.targetType), this.copyTypes(subject.additionalBounds), this.copyRvalue(subject.value));
     }
 
     public Rvalue
@@ -967,21 +967,26 @@ class DeepCopier {
 
     public Rvalue
     copyMethodInvocation(MethodInvocation subject) throws CompileException {
-        return new MethodInvocation(
+        MethodInvocation result = new MethodInvocation(
             subject.getLocation(),
             this.copyOptionalAtom(subject.target),
             subject.methodName,
             this.copyRvalues(subject.arguments)
         );
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        return result;
     }
 
     public Rvalue
     copySuperclassMethodInvocation(SuperclassMethodInvocation subject) throws CompileException {
-        return new SuperclassMethodInvocation(
+        SuperclassMethodInvocation result = new SuperclassMethodInvocation(
             subject.getLocation(),
+            subject.qualification == null ? null : this.copyType(subject.qualification),
             subject.methodName,
             this.copyRvalues(subject.arguments)
         );
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        return result;
     }
 
     public Rvalue
@@ -1024,22 +1029,27 @@ class DeepCopier {
 
     public Rvalue
     copyNewAnonymousClassInstance(NewAnonymousClassInstance subject) throws CompileException {
-        return new NewAnonymousClassInstance(
+        NewAnonymousClassInstance result = new NewAnonymousClassInstance(
             subject.getLocation(),
             this.copyOptionalRvalue(subject.qualification),
             this.copyAnonymousClassDeclaration(subject.anonymousClassDeclaration),
             this.copyRvalues(subject.arguments)
         );
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        return result;
     }
 
     public Rvalue
     copyNewArray(NewArray subject) throws CompileException {
-        return new NewArray(
+        NewArray result = new NewArray(
             subject.getLocation(),
             this.copyType(subject.type),
             this.copyRvalues(subject.dimExprs),
             subject.dims
         );
+        result.dimensionAnnotations = new org.codehaus.janino.Java.Annotation[subject.dimensionAnnotations.length][];
+        for (int i = 0; i < result.dimensionAnnotations.length; i++) result.dimensionAnnotations[i] = this.copyAnnotations(subject.dimensionAnnotations[i]);
+        return result;
     }
 
     public Rvalue
@@ -1058,7 +1068,7 @@ class DeepCopier {
 
     public Rvalue
     copyNewClassInstance(NewClassInstance subject) throws CompileException {
-        return (
+        NewClassInstance result = (
             subject.type != null
             ? new NewClassInstance(
                 subject.getLocation(),
@@ -1073,6 +1083,8 @@ class DeepCopier {
                 this.copyRvalues(subject.arguments)
             )
         );
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        return result;
     }
 
     public Rvalue
@@ -1089,8 +1101,22 @@ class DeepCopier {
     }
 
     public Rvalue
-    copyLambdaExpression(LambdaExpression subject) {
-        return new LambdaExpression(subject.getLocation(), subject.parameters, subject.body);
+    copyLambdaExpression(LambdaExpression subject) throws CompileException {
+        org.codehaus.janino.Java.LambdaParameters parameters;
+        if (subject.parameters instanceof org.codehaus.janino.Java.FormalLambdaParameters) {
+            parameters = new org.codehaus.janino.Java.FormalLambdaParameters(this.copyFormalParameters(
+                ((org.codehaus.janino.Java.FormalLambdaParameters) subject.parameters).formalParameters));
+        } else if (subject.parameters instanceof org.codehaus.janino.Java.IdentifierLambdaParameters) {
+            parameters = new org.codehaus.janino.Java.IdentifierLambdaParameters(
+                ((org.codehaus.janino.Java.IdentifierLambdaParameters) subject.parameters).identifier);
+        } else {
+            parameters = new org.codehaus.janino.Java.InferredLambdaParameters(
+                ((org.codehaus.janino.Java.InferredLambdaParameters) subject.parameters).names.clone());
+        }
+        org.codehaus.janino.Java.LambdaBody body = subject.body instanceof org.codehaus.janino.Java.BlockLambdaBody
+            ? new org.codehaus.janino.Java.BlockLambdaBody(this.copyBlock(((org.codehaus.janino.Java.BlockLambdaBody) subject.body).block))
+            : new org.codehaus.janino.Java.ExpressionLambdaBody(this.copyRvalue(((org.codehaus.janino.Java.ExpressionLambdaBody) subject.body).expression));
+        return new LambdaExpression(subject.getLocation(), parameters, body);
     }
 
     public Rvalue
@@ -1109,32 +1135,44 @@ class DeepCopier {
 
     public Rvalue
     copyMethodReference(MethodReference subject) throws CompileException {
-        return new MethodReference(subject.getLocation(), this.copyAtom(subject.lhs), subject.methodName);
+        MethodReference result = new MethodReference(subject.getLocation(), this.copyAtom(subject.lhs), subject.methodName);
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        result.superReference = subject.superReference;
+        result.superQualification = this.copyOptionalType(subject.superQualification);
+        return result;
     }
 
     public ArrayType
     copyArrayType(ArrayType subject) throws CompileException {
-        return new ArrayType(this.copyType(subject.componentType));
+        return new ArrayType(this.copyType(subject.componentType), this.copyAnnotations(subject.annotations));
     }
 
     public Type
     copyPrimitiveType(PrimitiveType bt) throws CompileException {
-        return new PrimitiveType(bt.getLocation(), bt.primitive);
+        return new PrimitiveType(bt.getLocation(), bt.primitive, this.copyAnnotations(bt.annotations));
     }
 
     public ReferenceType
     copyReferenceType(ReferenceType subject) throws CompileException {
-        return new ReferenceType(
+        ReferenceType result = new ReferenceType(
             subject.getLocation(),
             this.copyAnnotations(subject.annotations),
             subject.identifiers,
             this.copyOptionalTypeArguments(subject.typeArguments)
         );
+        for (int i = 0; i < subject.segmentAnnotations.length; i++) {
+            result.segmentAnnotations[i] = this.copyAnnotations(subject.segmentAnnotations[i]);
+            if (i < subject.segmentAnnotations.length - 1) result.segmentTypeArguments[i] = this.copyOptionalTypeArguments(subject.segmentTypeArguments[i]);
+        }
+        return result;
     }
 
     public Type
     copyRvalueMemberType(RvalueMemberType subject) throws CompileException {
-        return new RvalueMemberType(subject.getLocation(), this.copyRvalue(subject.rvalue), subject.identifier);
+        RvalueMemberType result = new RvalueMemberType(subject.getLocation(), this.copyRvalue(subject.rvalue), subject.identifier);
+        result.typeArguments = this.copyOptionalTypeArguments(subject.typeArguments);
+        result.annotations = this.copyAnnotations(subject.annotations);
+        return result;
     }
 
     public Type
@@ -1142,16 +1180,20 @@ class DeepCopier {
 
     public ConstructorInvocation
     copyAlternateConstructorInvocation(AlternateConstructorInvocation subject) throws CompileException {
-        return new AlternateConstructorInvocation(subject.getLocation(), this.copyRvalues(subject.arguments));
+        AlternateConstructorInvocation result = new AlternateConstructorInvocation(subject.getLocation(), this.copyRvalues(subject.arguments));
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        return result;
     }
 
     public ConstructorInvocation
     copySuperConstructorInvocation(SuperConstructorInvocation subject) throws CompileException {
-        return new SuperConstructorInvocation(
+        SuperConstructorInvocation result = new SuperConstructorInvocation(
             subject.getLocation(),
             this.copyOptionalRvalue(subject.qualification),
             this.copyRvalues(subject.arguments)
         );
+        result.typeArguments = subject.typeArguments == null ? null : this.copyTypeArguments(subject.typeArguments);
+        return result;
     }
 
     public Lvalue
@@ -1230,27 +1272,22 @@ class DeepCopier {
 
     public FormalParameters
     copyFormalParameters(FunctionDeclarator.FormalParameters subject) throws CompileException {
-        return new FormalParameters(
-            subject.getLocation(),
-            this.copyFormalParameters(subject.parameters),
-            subject.variableArity
-        );
+        FormalParameters result = new FormalParameters(subject.getLocation(), this.copyFormalParameters(subject.parameters), subject.variableArity);
+        result.receiverParameter = subject.receiverParameter == null ? null : this.copyFormalParameter(subject.receiverParameter);
+        return result;
     }
 
     public FunctionDeclarator.FormalParameter
     copyFormalParameter(FunctionDeclarator.FormalParameter subject) throws CompileException {
 
-        return new FormalParameter(
-            subject.getLocation(),
-            this.copyModifiers(subject.modifiers),
-            this.copyType(subject.type),
-            subject.name
-        );
+        FormalParameter result = new FormalParameter(subject.getLocation(), this.copyModifiers(subject.modifiers), this.copyType(subject.type), subject.name);
+        result.variableArityAnnotations = this.copyAnnotations(subject.variableArityAnnotations);
+        return result;
     }
 
     public CatchParameter
     copyCatchParameter(CatchParameter subject) throws CompileException {
-        return new CatchParameter(subject.getLocation(), subject.finaL, this.copyTypes(subject.types), subject.name);
+        return new CatchParameter(subject.getLocation(), subject.finaL, this.copyTypes(subject.types), subject.name, this.copyModifiers(subject.modifiers));
     }
 
     public EnumConstant
@@ -1263,6 +1300,17 @@ class DeepCopier {
             subject.name,
             this.copyOptionalRvalues(subject.arguments)
         );
+        result.hasClassBody = subject.hasClassBody;
+
+        for (ConstructorDeclarator cd : subject.constructors) {
+            result.addConstructor(this.copyConstructorDeclarator(cd));
+        }
+        for (MethodDeclarator md : subject.getMethodDeclarations()) {
+            result.addDeclaredMethod(this.copyMethodDeclarator(md));
+        }
+        for (MemberTypeDeclaration mtd : subject.getMemberTypeDeclarations()) {
+            result.addMemberTypeDeclaration(this.copyMemberTypeDeclaration(mtd));
+        }
 
         for (FieldDeclarationOrInitializer fdoi : subject.fieldDeclarationsAndInitializers) {
             result.addFieldDeclarationOrInitializer(this.copyFieldDeclarationOrInitializer(fdoi));
@@ -1403,7 +1451,7 @@ class DeepCopier {
 
     public TypeParameter
     copyTypeParameter(TypeParameter subject) throws CompileException {
-        return new TypeParameter(subject.name, this.copyOptionalReferenceTypes(subject.bound));
+        return new TypeParameter(subject.name, this.copyOptionalReferenceTypes(subject.bound), this.copyAnnotations(subject.annotations));
     }
 
     // -----------------------------------

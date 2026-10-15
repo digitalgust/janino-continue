@@ -113,6 +113,7 @@ class Compiler extends AbstractCompiler {
 
         // Compose the effective compiler options.
         List<String> options = new ArrayList<>(this.compilerOptions);
+        if (this.parameters) options.add("-parameters");
 
         // Debug options.
         {

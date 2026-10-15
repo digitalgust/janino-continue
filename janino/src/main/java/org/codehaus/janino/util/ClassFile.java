@@ -144,6 +144,18 @@ class ClassFile implements Annotatable {
         ));
     }
 
+    /** Records the immediately enclosing executable, or just its class for an initializer. */
+    public void addEnclosingMethodAttribute(String owner, @Nullable String name, @Nullable String descriptor) {
+        final short classIndex = this.addConstantClassInfo(owner);
+        final short methodIndex = name == null ? 0 : this.addConstantNameAndTypeInfo(name, descriptor);
+        this.attributes.add(new AttributeInfo(this.addConstantUtf8Info("EnclosingMethod")) {
+            @Override protected void storeBody(DataOutputStream dos) throws IOException {
+                dos.writeShort(classIndex);
+                dos.writeShort(methodIndex);
+            }
+        });
+    }
+
     /**
      * Adds the {@code Deprecated} attribute to this class.
      */
@@ -165,6 +177,12 @@ class ClassFile implements Annotatable {
     @Nullable public SignatureAttribute
     getSignatureAttribute() {
         return (SignatureAttribute) this.findAttribute(this.attributes, "Signature");
+    }
+
+    /** Adds the generic declaration of this class. */
+    public void
+    addSignatureAttribute(String signature) {
+        this.attributes.add(new SignatureAttribute(this.addConstantUtf8Info("Signature"), this.addConstantUtf8Info(signature)));
     }
 
     /**
@@ -265,6 +283,49 @@ class ClassFile implements Annotatable {
         aa.getAnnotations().add(
             new Annotation(this.addConstantUtf8Info(fieldDescriptor), elementValuePairs)
         );
+    }
+
+    /**
+     * Finds the {@code Runtime[In]visibleTypeAnnotations} attribute in the <var>attributes</var>.
+     *
+     * @return {@code null} if <var>attributes</var> contains no such attribute
+     */
+    @Nullable private TypeAnnotationsAttribute
+    getTypeAnnotationsAttribute(boolean runtimeVisible, List<AttributeInfo> attributes) {
+        String attributeName = runtimeVisible ? "RuntimeVisibleTypeAnnotations" : "RuntimeInvisibleTypeAnnotations";
+        return (TypeAnnotationsAttribute) this.findAttribute(attributes, attributeName);
+    }
+
+    /**
+     * Creates a {@code Runtime[In]visibleTypeAnnotations} attribute on the class (if it does not yet exist) and adds
+     * an entry to it.
+     */
+    public void
+    addTypeAnnotationsAttributeEntry(boolean runtimeVisible, TypeAnnotation typeAnnotation) {
+        this.addTypeAnnotationsAttributeEntry(runtimeVisible, typeAnnotation, this.attributes);
+    }
+
+    /**
+     * Adds a {@code Runtime[In]visibleTypeAnnotations} attribute to the <var>target</var> (if it does not yet exist)
+     * and adds an entry to it.
+     */
+    private void
+    addTypeAnnotationsAttributeEntry(
+        boolean         runtimeVisible,
+        TypeAnnotation  typeAnnotation,
+        List<AttributeInfo> target
+    ) {
+
+        // Find or create the "Runtime[In]visibleTypeAnnotations" attribute.
+        TypeAnnotationsAttribute taa = this.getTypeAnnotationsAttribute(runtimeVisible, target);
+        if (taa == null) {
+            String attributeName = runtimeVisible ? "RuntimeVisibleTypeAnnotations" : "RuntimeInvisibleTypeAnnotations";
+            taa = new TypeAnnotationsAttribute(this.addConstantUtf8Info(attributeName));
+            target.add(taa);
+        }
+
+        // Add the new type annotation.
+        taa.getTypeAnnotations().add(typeAnnotation);
     }
 
     /**
@@ -1822,6 +1883,15 @@ class ClassFile implements Annotatable {
         }
 
         /**
+         * Adds a {@code Runtime[In]visibleTypeAnnotations} attribute to this method (if it does not yet exist) and
+         * adds an entry to it.
+         */
+        public void
+        addTypeAnnotationsAttributeEntry(boolean runtimeVisible, TypeAnnotation typeAnnotation) {
+            ClassFile.this.addTypeAnnotationsAttributeEntry(runtimeVisible, typeAnnotation, this.attributes);
+        }
+
+        /**
          * Writes this object to a {@link DataOutputStream}, in the format described inJVMS7 4.6.
          */
         public void
@@ -1929,6 +1999,15 @@ class ClassFile implements Annotatable {
         }
 
         /**
+         * Adds a {@code Runtime[In]visibleTypeAnnotations} attribute to this field (if it does not yet exist) and
+         * adds an entry to it.
+         */
+        public void
+        addTypeAnnotationsAttributeEntry(boolean runtimeVisible, TypeAnnotation typeAnnotation) {
+            ClassFile.this.addTypeAnnotationsAttributeEntry(runtimeVisible, typeAnnotation, this.attributes);
+        }
+
+        /**
          * Writes this object to a {@link DataOutputStream}, in the format described inJVMS7 4.5.
          */
         public void
@@ -2031,6 +2110,9 @@ class ClassFile implements Annotatable {
         } else
         if ("AnnotationDefault".equals(attributeName)) {
             result = AnnotationDefaultAttribute.loadBody(attributeNameIndex, bdis);
+        } else
+        if ("RuntimeVisibleParameterAnnotations".equals(attributeName) || "RuntimeInvisibleParameterAnnotations".equals(attributeName)) {
+            result = ParameterAnnotationsAttribute.loadBody(attributeNameIndex, bdis);
         } else
         if ("RuntimeVisibleAnnotations".equals(attributeName)) {
             result = AnnotationsAttribute.loadBody(attributeNameIndex, bdis);
@@ -2271,6 +2353,136 @@ class ClassFile implements Annotatable {
 
             dos.writeShort(this.annotations.size()); // num_annotations
             for (Annotation a : this.annotations) a.store(dos);
+        }
+    }
+
+    /** Runtime[In]visibleParameterAnnotations (JVMS 4.7.18/19). */
+    public static class ParameterAnnotationsAttribute extends AttributeInfo {
+        private final List<List<Annotation>> parameters = new ArrayList<>();
+        public ParameterAnnotationsAttribute(short nameIndex, int parameterCount) {
+            super(nameIndex);
+            if (parameterCount > 255) throw new IllegalArgumentException("Too many parameters");
+            for (int i = 0; i < parameterCount; i++) this.parameters.add(new ArrayList<Annotation>());
+        }
+        public List<Annotation> getAnnotations(int parameter) { return this.parameters.get(parameter); }
+        private static ParameterAnnotationsAttribute loadBody(short nameIndex, DataInputStream dis) throws IOException {
+            ParameterAnnotationsAttribute result = new ParameterAnnotationsAttribute(nameIndex, dis.readUnsignedByte());
+            for (List<Annotation> annotations : result.parameters) {
+                int count = dis.readUnsignedShort();
+                for (int i = 0; i < count; i++) annotations.add(AnnotationsAttribute.loadAnnotation(dis));
+            }
+            return result;
+        }
+        @Override protected void storeBody(DataOutputStream dos) throws IOException {
+            dos.writeByte(this.parameters.size());
+            for (List<Annotation> annotations : this.parameters) {
+                dos.writeShort(annotations.size());
+                for (Annotation annotation : annotations) annotation.store(dos);
+            }
+        }
+    }
+
+    /**
+     * Representation of a {@code Runtime[In]visibleTypeAnnotations} attribute, see JVMS8 4.7.20.
+     */
+    public static
+    class TypeAnnotationsAttribute extends AttributeInfo {
+
+        private final List<TypeAnnotation> typeAnnotations;
+
+        public TypeAnnotationsAttribute(short attributeNameIndex) {
+            super(attributeNameIndex);
+            this.typeAnnotations = new ArrayList<>();
+        }
+
+        /**
+         * @return The {@link TypeAnnotation}s contained in this {@link TypeAnnotationsAttribute}
+         */
+        public List<TypeAnnotation>
+        getTypeAnnotations() { return this.typeAnnotations; }
+
+        // Implement "AttributeInfo".
+        @Override protected void
+        storeBody(DataOutputStream dos) throws IOException {
+
+            dos.writeShort(this.typeAnnotations.size());     // num_annotations
+            for (TypeAnnotation ta : this.typeAnnotations) { // type_annotations[num_annotations]
+                ta.store(dos);
+            }
+        }
+    }
+
+    /**
+     * Representation of a {@code type_annotation} structure, see JVMS8 4.7.20.
+     * <p>
+     *   Only the target types 0x13 (FIELD), 0x14 (METHOD_RETURN), 0x16 (METHOD_FORMAL_PARAMETER) and 0x17 (THROWS)
+     *   are currently implemented, i.e. the declaration positions that do not live in the "Code" attribute.
+     * </p>
+     */
+    public static
+    class TypeAnnotation {
+
+        /**
+         * One of 0x13 (FIELD), 0x14 (METHOD_RETURN), 0x16 (METHOD_FORMAL_PARAMETER) or 0x17 (THROWS); see JVMS8
+         * 4.7.20-A.
+         */
+        public final byte targetType;
+
+        /**
+         * The "formal_parameter_index" (target type 0x16) or the "throws_type_index" (target type 0x17), or -1 for
+         * the target types 0x13 and 0x14.
+         */
+        public final int targetIndex;
+
+        /**
+         * The "target_path"; pairs of (kind, argument_index); a zero-length array represents an empty path; see
+         * JVMS8 4.7.20.2.
+         */
+        public final byte[] targetPath;
+
+        /**
+         * The annotation (type_index and element_value_pairs).
+         */
+        public final Annotation annotation;
+
+        public
+        TypeAnnotation(byte targetType, int targetIndex, byte[] targetPath, Annotation annotation) {
+            this.targetType = targetType;
+            this.targetIndex = targetIndex;
+            this.targetPath  = targetPath;
+            this.annotation  = annotation;
+        }
+
+        /**
+         * Serializes this record and writes it to the given {@link DataOutputStream}.
+         */
+        public void
+        store(DataOutputStream dos) throws IOException {
+
+            dos.writeByte(this.targetType);         // target_type
+            if (this.targetType == 0x00 || this.targetType == 0x01 || this.targetType == 0x16) {
+                dos.writeByte(this.targetIndex);    // formal_parameter_index
+            } else
+            if (this.targetType == 0x10 || this.targetType == 0x11 || this.targetType == 0x12 || this.targetType == 0x17
+                || this.targetType == 0x42) {
+                dos.writeShort(this.targetIndex);   // throws_type_index
+            }
+
+            dos.writeByte(this.targetPath.length / 2); // path_length
+            dos.write(this.targetPath);                // path[path_length]
+
+            this.annotation.store(dos);                // annotation
+        }
+
+        @Override public String
+        toString() {
+            return (
+                "type_annotation(targetType=0x"
+                + Integer.toHexString(this.targetType & 0xff)
+                + ", targetIndex="
+                + this.targetIndex
+                + ")"
+            );
         }
     }
 

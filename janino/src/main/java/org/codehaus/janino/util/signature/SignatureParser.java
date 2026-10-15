@@ -698,7 +698,7 @@ class SignatureParser {
         /**
          * @see TypeArgument
          */
-        enum Mode { EXTENDS, SUPER, ANY, NONE }
+        public enum Mode { EXTENDS, SUPER, ANY, NONE }
 
         /**
          * @see TypeArgument

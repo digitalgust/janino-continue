@@ -35,7 +35,11 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
 import java.lang.reflect.WildcardType;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.codehaus.commons.compiler.CompileException;
 import org.codehaus.commons.compiler.InternalCompilerException;
@@ -67,6 +71,30 @@ class ReflectionIClass extends IClass {
         ITypeVariable[] result = new ITypeVariable[tps.length];
         for (int i = 0; i < result.length; i++) result[i] = this.typeVariableToITypeVariable(tps[i]);
 
+        return result;
+    }
+
+    @Override public GenericType[]
+    getGenericSupertypes() {
+        List<GenericType> result = new ArrayList<>();
+        java.lang.reflect.Type superclass = this.clazz.getGenericSuperclass();
+        if (superclass != null) result.add(superclass instanceof Class
+            ? this.classToRawType((Class<?>) superclass) : this.typeToGenericType(superclass));
+        for (java.lang.reflect.Type iface : this.clazz.getGenericInterfaces()) {
+            result.add(iface instanceof Class ? this.classToRawType((Class<?>) iface) : this.typeToGenericType(iface));
+        }
+        return result.toArray(new GenericType[result.size()]);
+    }
+
+    @Override public Map<String, GenericType[]> getTypeParameterBounds() {
+        Map<String, GenericType[]> result = new HashMap<>();
+        for (TypeVariable<?> variable : this.clazz.getTypeParameters()) {
+            Type[] bounds = variable.getBounds();
+            GenericType[] types = new GenericType[bounds.length];
+            for (int i = 0; i < types.length; i++) types[i] = bounds[i] instanceof Class
+                ? this.classToRawType((Class<?>) bounds[i]) : this.typeToGenericType(bounds[i]);
+            result.put(variable.getName(), types);
+        }
         return result;
     }
 
@@ -106,16 +134,16 @@ class ReflectionIClass extends IClass {
             return iClass;
         } else
         if (type instanceof GenericArrayType) {
-            throw new AssertionError("NYI");
+            return this.iClassLoader.getArrayIClass(UnitCompiler.rawTypeOf(this.typeToIType(((GenericArrayType) type).getGenericComponentType())));
         } else
         if (type instanceof ParameterizedType) {
-            throw new AssertionError("NYI");
+            return this.typeToIType(((ParameterizedType) type).getRawType());
         } else
         if (type instanceof TypeVariable) {
-            throw new AssertionError("NYI");
+            return this.typeToIType(((TypeVariable<?>) type).getBounds()[0]);
         } else
         if (type instanceof WildcardType) {
-            throw new AssertionError("NYI");
+            return this.typeToIType(((WildcardType) type).getUpperBounds()[0]);
         } else
         {
             throw new AssertionError(type.getClass());
@@ -324,6 +352,41 @@ class ReflectionIClass extends IClass {
 
         ReflectionIConstructor(Constructor<?> constructor) { this.constructor = constructor; }
 
+        @Override public Map<String, GenericType[]> getTypeParameterBounds() {
+            Map<String, GenericType[]> result = new HashMap<>();
+            for (java.lang.reflect.TypeVariable<?> variable : this.constructor.getTypeParameters()) {
+                java.lang.reflect.Type[] bounds = variable.getBounds();
+                GenericType[] types = new GenericType[bounds.length];
+                for (int i = 0; i < bounds.length; i++) types[i] = bounds[i] instanceof Class
+                    ? ReflectionIClass.this.classToRawType((Class<?>) bounds[i]) : ReflectionIClass.this.typeToGenericType(bounds[i]);
+                result.put(variable.getName(), types);
+            }
+            return result;
+        }
+
+        @Override public GenericType[] getGenericThrownExceptions() {
+            java.lang.reflect.Type[] exceptions = this.constructor.getGenericExceptionTypes();
+            GenericType[] result = new GenericType[exceptions.length];
+            for (int i = 0; i < result.length; i++) result[i] = exceptions[i] instanceof Class
+                ? ReflectionIClass.this.classToRawType((Class<?>) exceptions[i]) : ReflectionIClass.this.typeToGenericType(exceptions[i]);
+            return result;
+        }
+
+        @Override public String[] getTypeParameterNames() {
+            java.lang.reflect.TypeVariable<?>[] variables = this.constructor.getTypeParameters();
+            String[] result = new String[variables.length];
+            for (int i = 0; i < result.length; i++) result[i] = variables[i].getName();
+            return result;
+        }
+        @Override public GenericType[] getGenericParameterTypes() throws CompileException {
+            java.lang.reflect.Type[] parameters = this.constructor.getGenericParameterTypes();
+            GenericType[] result = new GenericType[parameters.length];
+            for (int i = 0; i < result.length; i++) result[i] = parameters[i] instanceof Class
+                ? ReflectionIClass.this.classToRawType((Class<?>) parameters[i]) : ReflectionIClass.this.typeToGenericType(parameters[i]);
+            int count = this.getParameterTypes().length;
+            if (result.length > count) result = java.util.Arrays.copyOfRange(result, result.length - count, result.length);
+            return result;
+        }
         // Implement IMember.
         @Override public Access
         getAccess() { return ReflectionIClass.modifiers2Access(this.constructor.getModifiers()); }
@@ -392,7 +455,49 @@ class ReflectionIClass extends IClass {
     public
     class ReflectionIMethod extends IMethod {
 
-        ReflectionIMethod(Method method) { this.method = method; }
+        @Override public Map<String, GenericType[]> getTypeParameterBounds() {
+            Map<String, GenericType[]> result = new HashMap<>();
+            for (java.lang.reflect.TypeVariable<?> variable : this.method.getTypeParameters()) {
+                java.lang.reflect.Type[] bounds = variable.getBounds();
+                GenericType[] types = new GenericType[bounds.length];
+                for (int i = 0; i < bounds.length; i++) types[i] = bounds[i] instanceof Class
+                    ? ReflectionIClass.this.classToRawType((Class<?>) bounds[i]) : ReflectionIClass.this.typeToGenericType(bounds[i]);
+                result.put(variable.getName(), types);
+            }
+            return result;
+        }
+
+        @Override public GenericType[] getGenericThrownExceptions() {
+            java.lang.reflect.Type[] exceptions = this.method.getGenericExceptionTypes();
+            GenericType[] result = new GenericType[exceptions.length];
+            for (int i = 0; i < result.length; i++) result[i] = exceptions[i] instanceof Class
+                ? ReflectionIClass.this.classToRawType((Class<?>) exceptions[i]) : ReflectionIClass.this.typeToGenericType(exceptions[i]);
+            return result;
+        }
+
+        ReflectionIMethod(Method method) {
+            this.method = method;
+
+            GenericType grt = ReflectionIClass.this.typeToGenericType(method.getGenericReturnType());
+            if (grt != null && grt != GenericType.ERASED) ReflectionIClass.this.genericReturnTypes.put(this, grt);
+
+            if (method.getTypeParameters().length > 0) {
+                String[] ns = new String[method.getTypeParameters().length];
+                for (int i = 0; i < ns.length; i++) ns[i] = method.getTypeParameters()[i].getName();
+                ReflectionIClass.this.methodTypeParameterNames.put(this, ns);
+            }
+
+            List<GenericType> gpts = new ArrayList<>();
+            for (java.lang.reflect.Type pt : method.getGenericParameterTypes()) {
+                GenericType gpt = pt instanceof Class ? ReflectionIClass.this.classToRawType((Class<?>) pt)
+                    : ReflectionIClass.this.typeToGenericType(pt);
+                if (gpt == GenericType.ERASED) { gpts = null; break; }
+                gpts.add(gpt);
+            }
+            if (gpts != null) {
+                ReflectionIClass.this.genericParameterTypes.put(this, gpts.toArray(new GenericType[gpts.size()]));
+            }
+        }
 
         // Implement IMember.
         @Override public Access
@@ -418,6 +523,8 @@ class ReflectionIClass extends IClass {
         @Override public boolean
         isStatic() { return Modifier.isStatic(this.method.getModifiers()); }
 
+        @Override public boolean isFinal() { return Modifier.isFinal(this.method.getModifiers()); }
+
         @Override public boolean
         isAbstract() { return Modifier.isAbstract(this.method.getModifiers()); }
 
@@ -433,7 +540,12 @@ class ReflectionIClass extends IClass {
     private
     class ReflectionIField extends IField {
 
-        ReflectionIField(Field field) { this.field = field; }
+        ReflectionIField(Field field) {
+            this.field = field;
+
+            GenericType gft = ReflectionIClass.this.typeToGenericType(field.getGenericType());
+            if (gft != null && gft != GenericType.ERASED) ReflectionIClass.this.genericFieldTypes.put(this, gft);
+        }
 
         // Implement IMember.
         @Override public Access
@@ -532,10 +644,11 @@ class ReflectionIClass extends IClass {
     private IMethod[]
     methodsToIMethods(Method[] methods) {
 
-        IMethod[] result = new IMethod[methods.length];
-        for (int i = 0; i < result.length; i++) result[i] = new ReflectionIMethod(methods[i]);
-
-        return result;
+        List<IMethod> result = new ArrayList<IMethod>();
+        for (Method method : methods) {
+            if (!method.isBridge()) result.add(new ReflectionIMethod(method));
+        }
+        return result.toArray(new IMethod[0]);
     }
 
     private IField[]
@@ -546,6 +659,120 @@ class ReflectionIClass extends IClass {
 
         return result;
     }
+
+    /**
+     * @return The declared (generic) return type of the given method, or {@code null} if it is not generic
+     */
+    public GenericType
+    getGenericReturnType(IMethod im) { return this.genericReturnTypes.get(im); }
+
+    /**
+     * @return The declared (generic) type of the given field, or {@code null} if it is not generic
+     */
+    public GenericType
+    getGenericFieldType(IField ifld) { return this.genericFieldTypes.get(ifld); }
+
+    /**
+     * @return The declared (generic) parameter types of the given method, or {@code null}
+     */
+    public GenericType[]
+    getGenericParameterTypes(IMethod im) { return this.genericParameterTypes.get(im); }
+
+    /**
+     * @return The names of the type parameters declared by the given method, or {@code null}
+     */
+    public String[]
+    getMethodTypeParameterNames(IMethod im) { return this.methodTypeParameterNames.get(im); }
+
+    /**
+     * Converts a "java.lang.reflect.Type" into a {@link GenericType}; returns {@code null} for non-generic types
+     * and {@link GenericType#ERASED} for unrepresentable types.
+     */
+    GenericType
+    typeToGenericType(java.lang.reflect.Type t) {
+
+        if (t instanceof Class) {
+
+            // Not generic, or a raw type used as a type argument; needs no substitution.
+            return null;
+        }
+        if (t instanceof java.lang.reflect.TypeVariable) {
+            return new GenericType.TypeVariable(((java.lang.reflect.TypeVariable<?>) t).getName());
+        }
+        if (t instanceof java.lang.reflect.GenericArrayType) {
+            GenericType ct = this.typeToGenericType(((java.lang.reflect.GenericArrayType) t).getGenericComponentType());
+            return ct == null || ct == GenericType.ERASED ? GenericType.ERASED : new GenericType.ArrayOf(ct);
+        }
+        if (t instanceof java.lang.reflect.WildcardType) {
+            java.lang.reflect.WildcardType wildcard = (java.lang.reflect.WildcardType) t;
+            java.lang.reflect.Type[] bounds = wildcard.getLowerBounds();
+            boolean upper = bounds.length == 0;
+            if (upper) bounds = wildcard.getUpperBounds();
+            if (bounds.length != 1) return GenericType.ERASED;
+            GenericType bound = bounds[0] instanceof Class
+                ? this.classToRawType((Class<?>) bounds[0]) : this.typeToGenericType(bounds[0]);
+            return bound == null || bound == GenericType.ERASED ? GenericType.ERASED : new GenericType.Wildcard(upper, bound);
+        }
+        if (t instanceof java.lang.reflect.ParameterizedType) {
+            java.lang.reflect.ParameterizedType pt = (java.lang.reflect.ParameterizedType) t;
+            java.lang.reflect.Type raw = pt.getRawType();
+            if (!(raw instanceof Class)) return GenericType.ERASED;
+
+            IClass rawIClass;
+            try {
+                rawIClass = this.iClassLoader.loadIClass(Descriptor.fromClassName(((Class<?>) raw).getName()));
+            } catch (ClassNotFoundException cnfe) {
+                return GenericType.ERASED;
+            }
+
+            java.lang.reflect.Type[] ts = pt.getActualTypeArguments();
+            GenericType[] args = new GenericType[ts.length];
+            for (int i = 0; i < ts.length; i++) {
+                java.lang.reflect.Type arg = ts[i];
+
+                if (arg instanceof Class) {
+                    args[i] = this.classToRawType((Class<?>) arg);
+                    if (args[i] == null) return GenericType.ERASED;
+                    continue;
+                }
+
+                if (arg instanceof java.lang.reflect.WildcardType) {
+                    args[i] = this.typeToGenericType(arg);
+                    if (args[i] == null || args[i] == GenericType.ERASED) return GenericType.ERASED;
+                    continue;
+                }
+
+                GenericType a = this.typeToGenericType(arg);
+                if (a == null || a == GenericType.ERASED) return GenericType.ERASED;
+                args[i] = a;
+            }
+            GenericType owner = pt.getOwnerType() == null || java.lang.reflect.Modifier.isStatic(((Class<?>) raw).getModifiers()) ? null : this.typeToGenericType(pt.getOwnerType());
+            if (owner == GenericType.ERASED) return GenericType.ERASED;
+            return new GenericType.Parameterized(rawIClass, args, owner);
+        }
+        return GenericType.ERASED;
+    }
+
+    @Nullable private GenericType.Raw
+    classToRawType(Class<?> c) {
+        try {
+            return new GenericType.Raw(this.iClassLoader.loadIClass(Descriptor.fromClassName(c.getName())));
+        } catch (ClassNotFoundException cnfe) {
+            return null;
+        }
+    }
+
+    private final Map<IMethod, GenericType>
+    genericReturnTypes = new HashMap<>();
+
+    private final Map<IField, GenericType>
+    genericFieldTypes = new HashMap<>();
+
+    private final Map<IMethod, GenericType[]>
+    genericParameterTypes = new HashMap<>();
+
+    private final Map<IMethod, String[]>
+    methodTypeParameterNames = new HashMap<>();
 
     private static Access
     modifiers2Access(int modifiers) {

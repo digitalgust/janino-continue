@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 
@@ -386,7 +387,7 @@ class Unparser implements AutoCloseable {
                 Unparser.this.unparseFunctionInvocationArguments(ec.arguments);
             }
 
-            if (!Unparser.classDeclarationBodyIsEmpty(ec)) {
+            if (ec.hasClassBody || !Unparser.classDeclarationBodyIsEmpty(ec)) {
                 Unparser.this.pw.println(" {");
                 Unparser.this.pw.print(AutoIndentWriter.INDENT);
                 Unparser.this.unparseClassDeclarationBody(ec);
@@ -691,6 +692,7 @@ class Unparser implements AutoCloseable {
 
         @Override @Nullable public Void
         visitAlternateConstructorInvocation(AlternateConstructorInvocation aci) {
+            Unparser.this.unparseTypeArguments(aci.typeArguments);
             Unparser.this.pw.print("this");
             Unparser.this.unparseFunctionInvocationArguments(aci.arguments);
             return null;
@@ -702,6 +704,7 @@ class Unparser implements AutoCloseable {
                 Unparser.this.unparseLhs(sci.qualification, ".");
                 Unparser.this.pw.print('.');
             }
+            Unparser.this.unparseTypeArguments(sci.typeArguments);
             Unparser.this.pw.print("super");
             Unparser.this.unparseFunctionInvocationArguments(sci.arguments);
             return null;
@@ -742,13 +745,20 @@ class Unparser implements AutoCloseable {
 
         @Override @Nullable public Void
         visitArrayType(ArrayType at) {
-            Unparser.this.unparseType(at.componentType);
-            Unparser.this.pw.print("[]");
+            List<ArrayType> dimensions = new ArrayList<>();
+            Type leaf = at;
+            while (leaf instanceof ArrayType) { dimensions.add((ArrayType) leaf); leaf = ((ArrayType) leaf).componentType; }
+            Unparser.this.unparseType(leaf);
+            for (ArrayType dimension : dimensions) {
+                if (dimension.annotations.length > 0) { Unparser.this.pw.print(' '); Unparser.this.unparseAnnotations(dimension.annotations); }
+                Unparser.this.pw.print("[]");
+            }
             return null;
         }
 
         @Override @Nullable public Void
         visitPrimitiveType(PrimitiveType bt) {
+            Unparser.this.unparseAnnotations(bt.annotations);
             Unparser.this.pw.print(bt.toString());
             return null;
         }
@@ -756,13 +766,20 @@ class Unparser implements AutoCloseable {
         @Override @Nullable public Void
         visitReferenceType(ReferenceType rt) {
             Unparser.this.unparseAnnotations(rt.annotations);
-            Unparser.this.pw.print(rt.toString());
+            for (int i = 0; i < rt.identifiers.length; i++) {
+                if (i > 0) Unparser.this.pw.print('.');
+                Unparser.this.unparseAnnotations(rt.segmentAnnotations[i]);
+                Unparser.this.pw.print(rt.identifiers[i]);
+                Unparser.this.unparseTypeArguments(rt.segmentTypeArguments[i]);
+            }
             return null;
         }
 
         @Override @Nullable public Void
         visitRvalueMemberType(RvalueMemberType rmt) {
+            Unparser.this.unparseAnnotations(rmt.annotations);
             Unparser.this.pw.print(rmt.toString());
+            Unparser.this.unparseTypeArguments(rmt.typeArguments);
             return null;
         }
 
@@ -815,6 +832,7 @@ class Unparser implements AutoCloseable {
                 Unparser.this.unparseLhs(mi.target, ".");
                 Unparser.this.pw.print('.');
             }
+            Unparser.this.unparseTypeArguments(mi.typeArguments);
             Unparser.this.pw.print(mi.methodName);
             Unparser.this.unparseFunctionInvocationArguments(mi.arguments);
             return null;
@@ -827,7 +845,9 @@ class Unparser implements AutoCloseable {
                 Unparser.this.pw.print('.');
             }
             assert nci.type != null;
-            Unparser.this.pw.print("new " + nci.type.toString());
+            Unparser.this.pw.print("new ");
+            Unparser.this.unparseTypeArguments(nci.typeArguments);
+            Unparser.this.unparseType(nci.type);
             Unparser.this.unparseFunctionInvocationArguments(nci.arguments);
             return null;
         }
@@ -859,6 +879,10 @@ class Unparser implements AutoCloseable {
         visitCast(Cast c) {
             Unparser.this.pw.print('(');
             Unparser.this.unparseType(c.targetType);
+            for (Type bound : c.additionalBounds) {
+                Unparser.this.pw.print(" & ");
+                Unparser.this.unparseType(bound);
+            }
             Unparser.this.pw.print(") ");
             Unparser.this.unparseRhs(c.value, "cast");
             return null;
@@ -915,13 +939,13 @@ class Unparser implements AutoCloseable {
         visitNewArray(NewArray na) {
             Unparser.this.pw.print("new ");
             Unparser.this.unparseType(na.type);
-            for (Rvalue dimExpr : na.dimExprs) {
+            for (int i = 0; i < na.dimExprs.length + na.dims; i++) {
+                if (i < na.dimensionAnnotations.length) for (Annotation annotation : na.dimensionAnnotations[i]) {
+                    Unparser.this.pw.print(' '); annotation.accept(Unparser.this.annotationUnparser);
+                }
                 Unparser.this.pw.print('[');
-                Unparser.this.unparseAtom(dimExpr);
+                if (i < na.dimExprs.length) Unparser.this.unparseAtom(na.dimExprs[i]);
                 Unparser.this.pw.print(']');
-            }
-            for (int i = 0; i < na.dims; ++i) {
-                Unparser.this.pw.print("[]");
             }
             return null;
         }
@@ -957,7 +981,13 @@ class Unparser implements AutoCloseable {
 
         @Override @Nullable public Void
         visitSuperclassMethodInvocation(SuperclassMethodInvocation smi) {
-            Unparser.this.pw.print("super." + smi.methodName);
+            if (smi.qualification != null) {
+                Unparser.this.unparseType(smi.qualification);
+                Unparser.this.pw.print('.');
+            }
+            Unparser.this.pw.print("super.");
+            Unparser.this.unparseTypeArguments(smi.typeArguments);
+            Unparser.this.pw.print(smi.methodName);
             Unparser.this.unparseFunctionInvocationArguments(smi.arguments);
             return null;
         }
@@ -986,7 +1016,10 @@ class Unparser implements AutoCloseable {
                 Unparser.this.unparseLhs(naci.qualification, ".");
                 Unparser.this.pw.print('.');
             }
-            Unparser.this.pw.print("new " + naci.anonymousClassDeclaration.baseType.toString() + '(');
+            Unparser.this.pw.print("new ");
+            Unparser.this.unparseTypeArguments(naci.typeArguments);
+            Unparser.this.unparseType(naci.anonymousClassDeclaration.baseType);
+            Unparser.this.pw.print('(');
             for (int i = 0; i < naci.arguments.length; ++i) {
                 if (i > 0) Unparser.this.pw.print(", ");
                 Unparser.this.unparseAtom(naci.arguments[i]);
@@ -1000,13 +1033,22 @@ class Unparser implements AutoCloseable {
 
         @Override @Nullable public Void
         visitMethodReference(MethodReference mr) {
-            Unparser.this.pw.print(mr.toString());
+            if (mr.superReference) {
+                if (mr.superQualification != null) { Unparser.this.unparseType(mr.superQualification); Unparser.this.pw.print('.'); }
+                Unparser.this.pw.print("super");
+            } else Unparser.this.unparseAtom(mr.lhs);
+            Unparser.this.pw.print("::");
+            Unparser.this.unparseTypeArguments(mr.typeArguments);
+            Unparser.this.pw.print(mr.methodName);
             return null;
         }
 
         @Override @Nullable public Void
         visitInstanceCreationReference(ClassInstanceCreationReference cicr) {
-            Unparser.this.pw.print(cicr.toString());
+            Unparser.this.unparseType(cicr.type);
+            Unparser.this.pw.print("::");
+            Unparser.this.unparseTypeArguments(cicr.typeArguments);
+            Unparser.this.pw.print("new");
             return null;
         }
 
@@ -1342,6 +1384,7 @@ class Unparser implements AutoCloseable {
 
         this.unparseDocComment(cd);
         this.unparseModifiers(cd.getModifiers());
+        this.unparseTypeParameters(cd.getOptionalTypeParameters());
         AbstractClassDeclaration declaringClass = cd.getDeclaringClass();
         this.pw.print(
             declaringClass instanceof NamedClassDeclaration
@@ -1434,7 +1477,10 @@ class Unparser implements AutoCloseable {
     private void
     unparseVariableDeclarator(VariableDeclarator vd) {
         this.pw.print(vd.name);
-        for (int i = 0; i < vd.brackets; ++i) this.pw.print("[]");
+        for (int i = 0; i < vd.brackets; ++i) {
+            if (vd.dimensionAnnotations[i].length > 0) { this.pw.print(' '); this.unparseAnnotations(vd.dimensionAnnotations[i]); }
+            this.pw.print("[]");
+        }
 
         ArrayInitializerOrRvalue oi = vd.initializer;
         if (oi != null) {
@@ -1447,13 +1493,17 @@ class Unparser implements AutoCloseable {
     unparseFormalParameter(FunctionDeclarator.FormalParameter fp, boolean hasEllipsis) {
         this.unparseModifiers(fp.modifiers);
         this.unparseType(fp.type);
-        if (hasEllipsis) this.pw.write("...");
+        if (hasEllipsis) {
+            if (fp.variableArityAnnotations.length > 0) { this.pw.print(' '); this.unparseAnnotations(fp.variableArityAnnotations); }
+            this.pw.write("...");
+        }
         this.pw.print(" " + AutoIndentWriter.TABULATOR + fp.name);
     }
 
     private void
     unparseCatchParameter(CatchParameter cp) {
 
+        for (Modifier modifier : cp.modifiers) if (modifier instanceof Annotation) { this.pw.print(modifier); this.pw.print(' '); }
         if (cp.finaL) this.pw.print("final ");
 
         this.pw.write(cp.types[0].toString());
@@ -1673,6 +1723,7 @@ class Unparser implements AutoCloseable {
         this.unparseDocComment(ncd);
         this.unparseModifiers(ncd.getModifiers());
         this.pw.print("class " + ncd.name);
+        this.unparseTypeParameters(ncd.getOptionalTypeParameters());
 
         Type oet = ncd.extendedType;
         if (oet != null) {
@@ -1726,6 +1777,7 @@ class Unparser implements AutoCloseable {
         this.unparseModifiers(id.getModifiers());
         this.pw.print("interface ");
         this.pw.print(id.name);
+        this.unparseTypeParameters(id.getOptionalTypeParameters());
         if (id.extendedTypes.length > 0) this.pw.print(" extends " + Java.join(id.extendedTypes, ", "));
         this.pw.println(" {");
         this.pw.print(AutoIndentWriter.INDENT);
@@ -1764,6 +1816,10 @@ class Unparser implements AutoCloseable {
 
         this.pw.print('(');
         if (big) { this.pw.println(); this.pw.print(AutoIndentWriter.INDENT); }
+        if (fps.receiverParameter != null) {
+            this.unparseFormalParameter(fps.receiverParameter, false);
+            if (fps.parameters.length > 0) this.pw.print(", ");
+        }
         for (int i = 0; i < fps.parameters.length; ++i) {
             if (i > 0) {
                 if (big) {
@@ -1813,6 +1869,26 @@ class Unparser implements AutoCloseable {
         for (Modifier m : modifiers) m.accept(this.modifierUnparser);
     }
 
+    private void unparseTypeArguments(@Nullable Java.TypeArgument[] arguments) {
+        if (arguments == null) return;
+        this.pw.print('<');
+        for (int i = 0; i < arguments.length; i++) {
+            if (i > 0) this.pw.print(", ");
+            Java.TypeArgument argument = arguments[i];
+            if (argument instanceof Type) this.unparseType((Type) argument);
+            else if (argument instanceof Java.Wildcard) {
+                Java.Wildcard wildcard = (Java.Wildcard) argument;
+                for (Annotation annotation : wildcard.annotations) { annotation.accept(this.annotationUnparser); this.pw.print(' '); }
+                this.pw.print('?');
+                if (wildcard.referenceType != null) {
+                    this.pw.print(wildcard.bounds == Java.Wildcard.BOUNDS_SUPER ? " super " : " extends ");
+                    this.unparseType(wildcard.referenceType);
+                }
+            }
+        }
+        this.pw.print('>');
+    }
+
     private void
     unparseTypeParameters(@Nullable TypeParameter[] typeParameters) {
         if (typeParameters == null) return;
@@ -1827,13 +1903,14 @@ class Unparser implements AutoCloseable {
     private void
     unparseTypeParameter(TypeParameter typeParameter) {
 
+        for (Annotation annotation : typeParameter.annotations) { this.pw.print(annotation); this.pw.print(' '); }
         this.pw.print(typeParameter.name);
 
         ReferenceType[] bounds = typeParameter.bound;
         if (bounds != null) {
             this.pw.print(" extends ");
             for (int i = 0; i < bounds.length; i++) {
-                if (i > 0) this.pw.print(", ");
+                if (i > 0) this.pw.print(" & ");
                 this.unparseType(bounds[i]);
             }
         }

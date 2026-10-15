@@ -5,9 +5,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.codehaus.janino</groupId>
+    <groupId>io.github.digitalgust</groupId>
     <artifactId>janino-parent</artifactId>
-    <version>3.1.13-SNAPSHOT</version>
+    <version>4.0.0</version>
     <relativePath>../janino-parent</relativePath>
   </parent>
 
@@ -26,7 +26,7 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.codehaus.janino</groupId>
+      <groupId>io.github.digitalgust</groupId>
       <artifactId>commons-compiler</artifactId>
       <version>${project.parent.version}</version>
       <scope>test</scope>
@@ -45,6 +45,9 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
+          <!-- The tests assert English javac diagnostics; force a non-localized JDK regardless of the build machine's locale. -->
+          <!-- Tests like JlsTest 3.1 feed non-ASCII sources; on non-UTF-8 default locales (e.g. GBK Windows) the javac backend needs UTF-8. -->
+          <argLine>-Duser.language=en -Duser.country=US -Dfile.encoding=UTF-8</argLine>
 
           <!-- Add our compiler factories to the classpath. -->
           <additionalClasspathElements>

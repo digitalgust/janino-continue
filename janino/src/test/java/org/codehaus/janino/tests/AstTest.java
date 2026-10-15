@@ -83,6 +83,75 @@ import org.junit.Test;
 public
 class AstTest {
 
+    @Test public void intersectionAndInterfaceSuperRoundTrip() throws Exception {
+        String source = "interface I {default String text(){return \"ok\";}}"
+            + "public class Case implements I {interface F<T>{T get();}interface M{}"
+            + "public String text(){return I.super.text();}"
+            + "public static String run(){F<String> f=(F<String> & M)()->new Case().text();"
+            + "return f instanceof M?f.get():\"bad\";}}";
+        AbstractCompilationUnit parsed = new Parser(new Scanner(null, new StringReader(source))).parseAbstractCompilationUnit();
+        AbstractCompilationUnit copied = new DeepCopier().copyAbstractCompilationUnit(parsed);
+        String rendered = AstTest.unparse(copied);
+        Assert.assertTrue(rendered, rendered.contains("I.super.text"));
+        Assert.assertTrue(rendered, rendered.contains("& M"));
+        SimpleCompiler compiler = new SimpleCompiler();
+        compiler.setSourceVersion(8);
+        compiler.setTargetVersion(8);
+        compiler.cook(rendered);
+        Assert.assertEquals("ok", compiler.getClassLoader().loadClass("Case").getMethod("run").invoke(null));
+    }
+
+
+    @Test public void java8GenericAndAnnotationRoundTrip() throws Exception {
+        String source = "import java.lang.annotation.*;@Target({ElementType.TYPE_USE,ElementType.TYPE_PARAMETER}) @interface A{}"
+            + "public class Case<@A T extends Number & Runnable>{interface F{String get(String x);}"
+            + "public <@A U extends Number>Case(U n){}static <V>V id(V x){return x;}"
+            + "java.lang.@A String value @A [];String method() @A []{return null;}void varargs(String @A ...x){}"
+            + "void receiver(@A Case<T> this){}public static String run(){F f=Case::<String>id;"
+            + "Case<?> c=new <Integer>Case<RunnableNumber>(1);String[] a=new @A String @A[]{\"ok\"};"
+            + "return Case.<@A String>id(f.get(a[0]));}"
+            + "static class RunnableNumber extends Number implements Runnable{public int intValue(){return 0;}"
+            + "public long longValue(){return 0;}public float floatValue(){return 0;}public double doubleValue(){return 0;}public void run(){}}}";
+        AbstractCompilationUnit parsed = new Parser(new Scanner(null, new StringReader(source))).parseAbstractCompilationUnit();
+        AbstractCompilationUnit copied = new DeepCopier().copyAbstractCompilationUnit(parsed);
+        String rendered = AstTest.unparse(copied);
+        Assert.assertTrue(rendered, rendered.contains(" & Runnable"));
+        Assert.assertTrue(rendered, rendered.contains("::<String>id"));
+        Assert.assertTrue(rendered, rendered.contains("<@A String>id"));
+        Assert.assertTrue(rendered, rendered.contains("<@A U extends Number>"));
+        SimpleCompiler compiler = new SimpleCompiler();
+        compiler.setTargetVersion(8);
+        compiler.cook(rendered);
+        Assert.assertEquals("ok", compiler.getClassLoader().loadClass("Case").getMethod("run").invoke(null));
+    }
+
+    @Test public void genericOwnerRoundTrip() throws Exception {
+        String source = "import java.lang.annotation.*;@Target(ElementType.TYPE_USE) @interface A{}public class Case{"
+            + "static class O<T>{T value;O(T x){value=x;}class I<U>{<V extends U>I(V x){}T get(){return value;}}}"
+            + "O<@A String>.@A I<@A Integer> field;public static String run(){O<String> o=new O<String>(\"ok\");"
+            + "O<String>.I<Number> i=o.new <Integer>@A I<Number>(1);return i.get();}}";
+        AbstractCompilationUnit parsed = new Parser(new Scanner(null, new StringReader(source))).parseAbstractCompilationUnit();
+        String rendered = AstTest.unparse(new DeepCopier().copyAbstractCompilationUnit(parsed));
+        Assert.assertTrue(rendered, rendered.contains("O<@A String>.@A I<@A Integer>"));
+        Assert.assertTrue(rendered, rendered.contains("<Integer>@A I<Number>"));
+        SimpleCompiler compiler = new SimpleCompiler(); compiler.setTargetVersion(8); compiler.cook(rendered);
+        Assert.assertEquals("ok", compiler.getClassLoader().loadClass("Case").getMethod("run").invoke(null));
+    }
+
+    public static class BoundOwner<T> { public class Inner<U> {} }
+    public static class OwnerBound<V extends BoundOwner<Number>.Inner<Integer>> {}
+
+    @Test public void binaryOwnerBoundErasure() throws Exception {
+        java.io.InputStream input = OwnerBound.class.getResourceAsStream("AstTest$OwnerBound.class");
+        Assert.assertNotNull(input);
+        try {
+            org.codehaus.janino.ClassFileIClass type = new org.codehaus.janino.ClassFileIClass(
+                new org.codehaus.janino.util.ClassFile(input), new org.codehaus.janino.ClassLoaderIClassLoader(AstTest.class.getClassLoader()));
+            org.codehaus.janino.IClass bound = (org.codehaus.janino.IClass) type.getITypeVariables()[0].getBounds()[0];
+            Assert.assertEquals("Lorg/codehaus/janino/tests/AstTest$BoundOwner$Inner;", bound.getDescriptor());
+        } finally { input.close(); }
+    }
+
     private static Object
     compileAndEval(AbstractCompilationUnit acu) throws Exception {
         SimpleCompiler compiler = new SimpleCompiler();
@@ -639,6 +708,48 @@ class AstTest {
             UnparserTest.normalizeWhitespace(text2),
             UnparserTest.normalizeWhitespace(actual)
         );
+    }
+
+    @Test public void parameterizedReferencesRoundTrip() throws Exception {
+        String source = "import java.util.*;public class Case{interface F{List<String>get(List<List<String>>x,int i);}"
+            + "interface C{ArrayList<String>get();}public static boolean run(){F f=List<List<String>>::get;"
+            + "C c=ArrayList<String>::new;ArrayList<String>x=c.get();x.add(\"ok\");"
+            + "return f.get(Arrays.asList(x),0).get(0).equals(\"ok\");}}";
+        AbstractCompilationUnit unit = new Parser(new Scanner(null, new StringReader(source))).parseAbstractCompilationUnit();
+        String rendered = AstTest.unparse(new DeepCopier().copyAbstractCompilationUnit(unit));
+        SimpleCompiler compiler = new SimpleCompiler(); compiler.setTargetVersion(8); compiler.cook(rendered);
+        Assert.assertEquals(Boolean.TRUE, compiler.getClassLoader().loadClass("Case").getMethod("run").invoke(null));
+    }
+
+    @Test public void parameterizedReferencesWithCustomTokenStream() throws Exception {
+        String source = "import java.util.*;public class Case{interface F{int get(List<List<String>>x);}"
+            + "public static boolean run(){F f=List<List<String>>::size;int a=1,b=9,c=2;"
+            + "return a<b>>c&&f.get(Arrays.asList(Arrays.asList(\"ok\")))==1;}}";
+        Scanner scanner = new Scanner(null, new StringReader(source));
+        final org.codehaus.janino.TokenStream stream = new org.codehaus.janino.TokenStreamImpl(scanner);
+        org.codehaus.janino.TokenStream custom = (org.codehaus.janino.TokenStream) java.lang.reflect.Proxy.newProxyInstance(
+            AstTest.class.getClassLoader(), new Class<?>[] { org.codehaus.janino.TokenStream.class },
+            new java.lang.reflect.InvocationHandler() {
+                @Override public Object invoke(Object proxy, java.lang.reflect.Method method, Object[] arguments) throws Throwable {
+                    try { return method.invoke(stream, arguments); }
+                    catch (java.lang.reflect.InvocationTargetException e) { throw e.getCause(); }
+                }
+            });
+        AbstractCompilationUnit unit = new Parser(scanner, custom).parseAbstractCompilationUnit();
+        SimpleCompiler compiler = new SimpleCompiler(); compiler.setTargetVersion(8); compiler.cook(AstTest.unparse(unit));
+        Assert.assertEquals(Boolean.TRUE, compiler.getClassLoader().loadClass("Case").getMethod("run").invoke(null));
+    }
+
+    @Test public void arrayReferencesAndDiamondRoundTrip() throws Exception {
+        String source = "import java.util.*;public class Case{interface F<T,R>{R get(T x);}"
+            + "public static boolean run(){F<String[],String[]>copy=String[]::clone;F<Integer,String[]>make=String[]::new;"
+            + "Map<String,List<String>>m=new HashMap<>();List<String>x=new ArrayList<>(Arrays.asList(\"ok\"));"
+            + "m.put(\"k\",x=new ArrayList<>(x));String[]a={x.get(0)};"
+            + "return copy.get(a)!=a&&copy.get(a)[0].equals(\"ok\")&&make.get(2).length==2&&m.get(\"k\").get(0).equals(\"ok\");}}";
+        AbstractCompilationUnit unit = new Parser(new Scanner(null, new StringReader(source))).parseAbstractCompilationUnit();
+        String rendered = AstTest.unparse(new DeepCopier().copyAbstractCompilationUnit(unit));
+        SimpleCompiler compiler = new SimpleCompiler(); compiler.setTargetVersion(8); compiler.cook(rendered);
+        Assert.assertEquals(Boolean.TRUE, compiler.getClassLoader().loadClass("Case").getMethod("run").invoke(null));
     }
 
     public static String

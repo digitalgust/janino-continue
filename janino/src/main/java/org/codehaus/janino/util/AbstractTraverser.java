@@ -26,6 +26,7 @@
 package org.codehaus.janino.util;
 
 import org.codehaus.commons.nullanalysis.Nullable;
+import org.codehaus.janino.Java;
 import org.codehaus.janino.Java.AbstractClassDeclaration;
 import org.codehaus.janino.Java.AbstractCompilationUnit;
 import org.codehaus.janino.Java.AbstractCompilationUnit.ImportDeclaration;
@@ -414,7 +415,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
         @Override @Nullable public Void
         visitRvalue(Rvalue rvalue) throws EX {
-            AbstractTraverser.this.traverseRvalue(rvalue);
+            AbstractTraverser.this.dispatchRvalue(rvalue);
             return null;
         }
     };
@@ -679,6 +680,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
     traverseLocalVariableDeclarationStatement(LocalVariableDeclarationStatement lvds) throws EX {
         lvds.type.accept(this.atomTraverser);
         for (VariableDeclarator vd : lvds.variableDeclarators) {
+            for (Annotation[] dimension : vd.dimensionAnnotations) for (Annotation annotation : dimension) this.visitAnnotation(annotation);
             ArrayInitializerOrRvalue initializer = vd.initializer;
             if (initializer != null) this.traverseArrayInitializerOrRvalue(initializer);
         }
@@ -741,6 +743,29 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
         this.traverseBooleanRvalue(uo);
     }
 
+    /**
+     * Visits binary children in postorder without recursive binary visitor calls. Opt in only when
+     * nested binary-operation overrides are unnecessary; leaf and BooleanRvalue hooks are retained.
+     */
+    protected final void traverseBinaryOperationIteratively(BinaryOperation operation) throws EX {
+        java.util.List<Object[]> pending = new java.util.ArrayList<>();
+        pending.add(new Object[] { operation, Boolean.FALSE });
+        while (!pending.isEmpty()) {
+            Object[] task = pending.remove(pending.size() - 1);
+            Rvalue value = (Rvalue) task[0];
+            if (!(value instanceof BinaryOperation)) {
+                this.visitAtom(value);
+            } else if (task[1] == Boolean.TRUE) {
+                this.traverseBooleanRvalue((BinaryOperation) value);
+            } else {
+                BinaryOperation binary = (BinaryOperation) value;
+                pending.add(new Object[] { binary, Boolean.TRUE });
+                pending.add(new Object[] { binary.rhs, Boolean.FALSE });
+                pending.add(new Object[] { binary.lhs, Boolean.FALSE });
+            }
+        }
+    }
+
     @Override public void
     traverseBinaryOperation(BinaryOperation bo) throws EX {
         bo.lhs.accept(this.rvalueTraverser);
@@ -751,6 +776,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
     @Override public void
     traverseCast(Cast c) throws EX {
         c.targetType.accept(this.atomTraverser);
+        for (Type bound : c.additionalBounds) bound.accept(this.atomTraverser);
         c.value.accept(this.rvalueTraverser);
         this.traverseRvalue(c);
     }
@@ -782,14 +808,25 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
         this.traverseRvalue(io);
     }
 
+    private void traverseExplicitTypeArguments(@Nullable Java.TypeArgument[] arguments) throws EX {
+        if (arguments != null) for (Java.TypeArgument argument : arguments) if (argument instanceof Java.Type) {
+            ((Java.Type) argument).accept(this.atomTraverser);
+        }
+    }
+
     @Override public void
     traverseMethodInvocation(MethodInvocation mi) throws EX {
+        this.traverseExplicitTypeArguments(mi.typeArguments);
         if (mi.target != null) mi.target.accept(this.atomTraverser);
         this.traverseInvocation(mi);
     }
 
     @Override public void
-    traverseSuperclassMethodInvocation(SuperclassMethodInvocation smi) throws EX { this.traverseInvocation(smi); }
+    traverseSuperclassMethodInvocation(SuperclassMethodInvocation smi) throws EX {
+        this.traverseExplicitTypeArguments(smi.typeArguments);
+        if (smi.qualification != null) smi.qualification.accept(this.atomTraverser);
+        this.traverseInvocation(smi);
+    }
 
     @Override public void
     traverseLiteral(Literal l) throws EX { this.traverseRvalue(l); }
@@ -820,6 +857,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseNewAnonymousClassInstance(NewAnonymousClassInstance naci) throws EX {
+        this.traverseExplicitTypeArguments(naci.typeArguments);
         if (naci.qualification != null) {
             naci.qualification.accept(this.rvalueTraverser);
         }
@@ -830,6 +868,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseNewArray(NewArray na) throws EX {
+        for (Java.Annotation[] dimension : na.dimensionAnnotations) for (Java.Annotation annotation : dimension) annotation.accept(this.annotationTraverser);
         na.type.accept(this.atomTraverser);
         for (Rvalue dimExpr : na.dimExprs) dimExpr.accept(this.rvalueTraverser);
         this.traverseRvalue(na);
@@ -837,8 +876,8 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseNewInitializedArray(NewInitializedArray nia) throws EX {
-        assert nia.arrayType != null;
-        nia.arrayType.accept(this.atomTraverser);
+        // Synthesized arrays may carry an already resolved IClass instead of a type AST.
+        if (nia.arrayType != null) nia.arrayType.accept(this.atomTraverser);
         this.traverseArrayInitializerOrRvalue(nia.arrayInitializer);
     }
 
@@ -849,6 +888,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseNewClassInstance(NewClassInstance nci) throws EX {
+        this.traverseExplicitTypeArguments(nci.typeArguments);
         if (nci.qualification != null) {
             nci.qualification.accept(this.rvalueTraverser);
         }
@@ -873,7 +913,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
     traverseLambdaExpression(LambdaExpression le) throws EX { this.traverseRvalue(le); }
 
     @Override public void
-    traverseMethodReference(MethodReference mr) throws EX { this.traverseRvalue(mr); }
+    traverseMethodReference(MethodReference mr) throws EX { this.traverseExplicitTypeArguments(mr.typeArguments); this.traverseRvalue(mr); }
 
     @Override public void
     traverseClassInstanceCreationReference(ClassInstanceCreationReference cicr) throws EX {
@@ -885,22 +925,29 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseArrayType(ArrayType at) throws EX {
+        for (Annotation annotation : at.annotations) this.visitAnnotation(annotation);
         at.componentType.accept(this.atomTraverser);
         this.traverseType(at);
     }
 
     @Override public void
-    traversePrimitiveType(PrimitiveType bt) throws EX { this.traverseType(bt); }
+    traversePrimitiveType(PrimitiveType bt) throws EX {
+        for (Annotation annotation : bt.annotations) this.visitAnnotation(annotation);
+        this.traverseType(bt);
+    }
 
     @Override public void
     traverseReferenceType(ReferenceType rt) throws EX {
         for (Annotation a : rt.annotations) this.visitAnnotation(a);
+        for (Annotation[] segment : rt.segmentAnnotations) for (Annotation annotation : segment) this.visitAnnotation(annotation);
         this.traverseType(rt);
     }
 
     @Override public void
     traverseRvalueMemberType(RvalueMemberType rmt) throws EX {
         rmt.rvalue.accept(this.rvalueTraverser);
+        this.traverseExplicitTypeArguments(rmt.typeArguments);
+        for (Annotation annotation : rmt.annotations) this.visitAnnotation(annotation);
         this.traverseType(rmt);
     }
 
@@ -909,11 +956,13 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseAlternateConstructorInvocation(AlternateConstructorInvocation aci) throws EX {
+        this.traverseExplicitTypeArguments(aci.typeArguments);
         this.traverseConstructorInvocation(aci);
     }
 
     @Override public void
     traverseSuperConstructorInvocation(SuperConstructorInvocation sci) throws EX {
+        this.traverseExplicitTypeArguments(sci.typeArguments);
         if (sci.qualification != null) {
             sci.qualification.accept(this.rvalueTraverser);
         }
@@ -1033,6 +1082,12 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseFunctionDeclarator(FunctionDeclarator fd) throws EX {
+        Java.TypeParameter[] parameters = fd.getOptionalTypeParameters();
+        if (parameters != null) for (Java.TypeParameter parameter : parameters) {
+            for (Java.Annotation annotation : parameter.annotations) annotation.accept(this.annotationTraverser);
+            if (parameter.bound != null) for (Java.Type bound : parameter.bound) bound.accept(this.atomTraverser);
+        }
+
         this.traverseFormalParameters(fd.formalParameters);
         if (fd.statements != null) {
             for (BlockStatement bs : fd.statements) bs.accept(this.blockStatementTraverser);
@@ -1041,6 +1096,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseFormalParameters(FunctionDeclarator.FormalParameters formalParameters) throws EX {
+        if (formalParameters.receiverParameter != null) this.traverseFormalParameter(formalParameters.receiverParameter);
         for (FunctionDeclarator.FormalParameter formalParameter : formalParameters.parameters) {
             this.traverseFormalParameter(formalParameter);
         }
@@ -1048,6 +1104,7 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseFormalParameter(FunctionDeclarator.FormalParameter formalParameter) throws EX {
+        for (Annotation annotation : formalParameter.variableArityAnnotations) this.visitAnnotation(annotation);
         formalParameter.type.accept(this.atomTraverser);
     }
 
@@ -1065,6 +1122,13 @@ class AbstractTraverser<EX extends Throwable> implements Traverser<EX> {
 
     @Override public void
     traverseRvalue(Rvalue rv) throws EX { this.traverseAtom(rv); }
+
+    /**
+     * Dispatches to the "traverse...()" method for the CONCRETE type of the given rvalue (and, recursively, its
+     * subordinate atoms); opposed to {@link #traverseRvalue(Rvalue)}, which is a no-op unless overridden.
+     */
+    public void
+    dispatchRvalue(Rvalue rv) throws EX { rv.accept(this.rvalueTraverser); }
 
     @Override public void
     traverseBooleanRvalue(BooleanRvalue brv) throws EX { this.traverseRvalue(brv); }

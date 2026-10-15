@@ -2,9 +2,13 @@
 **/bin/
 **/build/
 **/target
+**/.idea
+**/_probe
+**/ai
 
 # ignore .project since everyone's different!
 **/.project
 
 # ignore temp files
 *~
+**/.flattened-pom.xml

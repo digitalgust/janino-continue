@@ -494,7 +494,7 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
                     }
                 }
 
-                return (this.delegate = new Java.SimpleType(location, iClass));
+                return (this.delegate = new Java.SimpleType(this.getLocation(), iClass));
             }
         };
     }

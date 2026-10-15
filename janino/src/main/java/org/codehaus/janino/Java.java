@@ -1078,6 +1078,8 @@ class Java {
      */
     public abstract static
     class AbstractTypeDeclaration implements TypeDeclaration {
+        @Nullable String assertionsDisabledField;
+
         private final Location                    location;
         private final Modifier[]                  modifiers;
         @Nullable private final TypeParameter[]   typeParameters;
@@ -1122,7 +1124,7 @@ class Java {
                 for (TypeParameter tp : this.typeParameters) {
                     if (tp.bound != null) {
                         for (ReferenceType boundType : tp.bound) {
-                            boundType.setEnclosingScope(enclosingScope);
+                            boundType.setEnclosingScope(this);
                         }
                     }
                 }
@@ -1200,7 +1202,6 @@ class Java {
                 this.getClassName()
                 + '$'
                 + ++this.localClassCount
-                + '$'
                 + localTypeName
             );
         }
@@ -1372,6 +1373,18 @@ class Java {
             (this.baseType = baseType).setEnclosingScope(new EnclosingScopeOfTypeDeclaration(this));
         }
 
+        // Compile time members.
+
+        /**
+         * Whether this anonymous class was synthesized by JANINO as the implementation of a LAMBDA expression or a
+         * method reference; set and used by {@link UnitCompiler}.
+         */
+        boolean lambdaProxy;
+        @Nullable IClass[] lambdaInterfaces;
+
+        /** Whether this class implements an enum constant's class body. */
+        boolean enumConstantBody;
+
         @Override @Nullable public <R, EX extends Throwable> R
         accept(TypeDeclarationVisitor<R, EX> visitor) throws EX {
             return visitor.visitAnonymousClassDeclaration(this);
@@ -1514,7 +1527,10 @@ class Java {
         }
 
         @Override public Access
-        getAccess() { return Java.modifiers2Access(this.getModifiers()); }
+        getAccess() {
+            return this.getDeclaringType() instanceof InterfaceDeclaration
+                ? Access.PUBLIC : Java.modifiers2Access(this.getModifiers());
+        }
 
         // Implement TypeBodyDeclaration.
 
@@ -1538,7 +1554,10 @@ class Java {
         }
 
         public boolean
-        isStatic() { return Java.hasAccessModifier(this.getModifiers(), "static"); }
+        isStatic() {
+            return this instanceof EnumDeclaration || this.getDeclaringType() instanceof InterfaceDeclaration
+                || Java.hasAccessModifier(this.getModifiers(), "static");
+        }
     }
 
     /**
@@ -1618,12 +1637,14 @@ class Java {
 
         @Override public String
         getClassName() {
-            for (Scope s = this.getEnclosingScope();; s = s.getEnclosingScope()) {
-                if (s instanceof Java.TypeDeclaration) {
-                    return ((Java.TypeDeclaration) s).getClassName() + '$' + this.name;
+            if (this.className != null) return this.className;
+            for (Scope scope = this.getEnclosingScope();; scope = scope.getEnclosingScope()) {
+                if (scope instanceof TypeDeclaration) {
+                    return (this.className = ((TypeDeclaration) scope).createLocalTypeName(this.name));
                 }
             }
         }
+        @Nullable private String className;
 
         @Override @Nullable public <R, EX extends Throwable> R
         accept(TypeDeclarationVisitor<R, EX> visitor) throws EX { return visitor.visitLocalClassDeclaration(this); }
@@ -1726,6 +1747,9 @@ class Java {
      */
     public static final
     class EnumConstant extends AbstractClassDeclaration implements DocCommentable {
+
+        /** Whether braces were present, including an empty constant-specific class body. */
+        public boolean hasClassBody;
 
         /**
          * The optional "doc comment" that appeared in the compilation unit immediately before this enum constant
@@ -1926,7 +1950,8 @@ class Java {
         // Implement MemberTypeDeclaration.
 
         @Override public Access
-        getAccess() { return Java.modifiers2Access(this.getModifiers()); }
+        getAccess() { return this.getDeclaringType() instanceof InterfaceDeclaration
+            ? Access.PUBLIC : Java.modifiers2Access(this.getModifiers()); }
 
         // Implement TypeDeclaration.
 
@@ -2131,7 +2156,12 @@ class Java {
         @Nullable public final ReferenceType[] bound;
 
         public
-        TypeParameter(String name, @Nullable ReferenceType[] bound) {
+        TypeParameter(String name, @Nullable ReferenceType[] bound) { this(name, bound, new Annotation[0]); }
+
+        public final Annotation[] annotations;
+
+        public TypeParameter(String name, @Nullable ReferenceType[] bound, Annotation[] annotations) {
+            this.annotations = annotations;
             assert name != null;
             this.name  = name;
             this.bound = bound;
@@ -2300,6 +2330,8 @@ class Java {
      */
     public abstract static
     class FunctionDeclarator extends AbstractTypeBodyDeclaration implements Annotatable, DocCommentable {
+        @Nullable public TypeParameter[] getOptionalTypeParameters() { return null; }
+
 
         @Nullable private final String docComment;
 
@@ -2348,7 +2380,18 @@ class Java {
             this.statements         = statements;
 
             this.type.setEnclosingScope(this);
-            for (FormalParameter fp : formalParameters.parameters) fp.type.setEnclosingScope(this);
+            for (FormalParameter fp : formalParameters.parameters) {
+                fp.type.setEnclosingScope(this);
+                for (Annotation annotation : fp.variableArityAnnotations) annotation.setEnclosingScope(this);
+                for (Modifier m : fp.modifiers) {
+                    if (m instanceof Annotation) ((Annotation) m).setEnclosingScope(this);
+                }
+            }
+            if (formalParameters.receiverParameter != null) {
+                FormalParameter receiver = formalParameters.receiverParameter;
+                receiver.type.setEnclosingScope(this);
+                for (Modifier modifier : receiver.modifiers) if (modifier instanceof Annotation) ((Annotation) modifier).setEnclosingScope(this);
+            }
             for (Type te : thrownExceptions) te.setEnclosingScope(this);
             if (statements != null) {
                 for (Java.BlockStatement bs : statements) {
@@ -2420,6 +2463,7 @@ class Java {
              * The parameters of this function, but not the {@link #variableArity}.
              */
             public final FormalParameter[] parameters;
+            @Nullable public FormalParameter receiverParameter;
 
             /**
              * Whether this method has "variable arity", i.e. its last parameter has an ellipsis ("...") after the
@@ -2454,6 +2498,7 @@ class Java {
          */
         public static final
         class FormalParameter extends Located {
+            public Annotation[] variableArityAnnotations = new Annotation[0];
 
             /**
              * The {@link Modifier}s of this parameter declaration.
@@ -2537,8 +2582,11 @@ class Java {
         @Nullable public Java.LocalVariable localVariable;
 
         public
-        CatchParameter(Location location, boolean finaL, Type[] types, String name) {
+        CatchParameter(Location location, boolean finaL, Type[] types, String name) { this(location, finaL, types, name, new Modifier[0]); }
+        public final Modifier[] modifiers;
+        public CatchParameter(Location location, boolean finaL, Type[] types, String name, Modifier[] modifiers) {
             super(location);
+            this.modifiers = modifiers;
             this.finaL = finaL;
             this.types = types;
             this.name  = name;
@@ -2570,6 +2618,16 @@ class Java {
      */
     public static final
     class ConstructorDeclarator extends FunctionDeclarator {
+        @Nullable private TypeParameter[] typeParameters;
+        @Override @Nullable public TypeParameter[] getOptionalTypeParameters() { return this.typeParameters; }
+        public void setTypeParameters(@Nullable TypeParameter[] parameters) {
+            this.typeParameters = parameters;
+            if (parameters != null) for (TypeParameter parameter : parameters) {
+                if (parameter.bound != null) for (ReferenceType bound : parameter.bound) bound.setEnclosingScope(this);
+                for (Annotation annotation : parameter.annotations) annotation.setEnclosingScope(this);
+            }
+        }
+
 
         /**
          * The resolved {@link IClass.IConstructor}.
@@ -2657,6 +2715,12 @@ class Java {
     class MethodDeclarator extends FunctionDeclarator {
 
         /**
+         * Whether this method was synthesized by JANINO as the SAM implementation of a LAMBDA expression or a
+         * method reference; set and used by {@link UnitCompiler}.
+         */
+        boolean lambdaSamImplementation;
+
+        /**
          * @param defaultValue See {@link #defaultValue}
          */
         public
@@ -2684,12 +2748,13 @@ class Java {
             );
             this.typeParameters = typeParameters;
             this.defaultValue   = defaultValue;
+            if (defaultValue != null) defaultValue.setEnclosingScope(this);
         }
 
         /**
          * @return The declared type parameters
          */
-        @Nullable TypeParameter[]
+        @Override @Nullable public TypeParameter[]
         getOptionalTypeParameters() { return this.typeParameters; }
 
         @Override public void
@@ -2699,7 +2764,7 @@ class Java {
                 for (TypeParameter tp : this.typeParameters) {
                     if (tp.bound != null) {
                         for (ReferenceType boundType : tp.bound) {
-                            boundType.setEnclosingScope(declaringType);
+                            boundType.setEnclosingScope(this);
                         }
                     }
                 }
@@ -2713,12 +2778,18 @@ class Java {
                 for (TypeParameter tp : this.typeParameters) {
                     if (tp.bound != null) {
                         for (ReferenceType boundType : tp.bound) {
-                            boundType.setEnclosingScope(enclosingScope);
+                            boundType.setEnclosingScope(this);
                         }
                     }
                 }
             }
-            for (FormalParameter fp : this.formalParameters.parameters) fp.type.setEnclosingScope(enclosingScope);
+            for (FormalParameter fp : this.formalParameters.parameters) {
+                fp.type.setEnclosingScope(enclosingScope);
+                for (Annotation annotation : fp.variableArityAnnotations) annotation.setEnclosingScope(enclosingScope);
+                for (Modifier m : fp.modifiers) {
+                    if (m instanceof Annotation) ((Annotation) m).setEnclosingScope(enclosingScope);
+                }
+            }
         }
 
         @Override public String
@@ -2751,6 +2822,7 @@ class Java {
          * The resolved {@link IMethod}.
          */
         @Nullable IClass.IMethod iMethod;
+
 
         public boolean isStatic()       { return Java.hasAccessModifier(this.getModifiers(), "static");       }
         public boolean isDefault()      { return Java.hasAccessModifier(this.getModifiers(), "default");      }
@@ -2897,6 +2969,12 @@ class Java {
          * The number of "[]"s after the name.
          */
         public final int brackets;
+        public Annotation[][] dimensionAnnotations;
+
+        public Type withType(Type type) {
+            for (int i = this.brackets - 1; i >= 0; i--) type = new ArrayType(type, this.dimensionAnnotations[i]);
+            return type;
+        }
 
         /**
          * The initializer for the variable, if any.
@@ -2913,6 +2991,7 @@ class Java {
             super(location);
             this.name        = name;
             this.brackets    = brackets;
+            this.dimensionAnnotations = new Annotation[brackets][0];
             this.initializer = initializer;
 
             // Used both by field declarations an local variable declarations, so naming conventions checking (JLS7
@@ -2924,6 +3003,7 @@ class Java {
          */
         public void
         setEnclosingScope(Scope s) {
+            for (Annotation[] dimension : this.dimensionAnnotations) for (Annotation annotation : dimension) annotation.setEnclosingScope(s);
             if (this.initializer != null) this.initializer.setEnclosingScope(s);
         }
 
@@ -3456,6 +3536,7 @@ class Java {
             setEnclosingTryStatement(TryStatement ts) {
                 this.type.setEnclosingScope(ts);
                 this.variableDeclarator.setEnclosingScope(ts);
+                for (Modifier modifier : this.modifiers) if (modifier instanceof Annotation) ((Annotation) modifier).setEnclosingScope(ts);
             }
 
             @Override@Nullable public <R, EX extends Throwable> R
@@ -3609,6 +3690,7 @@ class Java {
         CatchClause(Location location, CatchParameter catchParameter, BlockStatement body) {
             super(location);
             (this.catchParameter = catchParameter).setEnclosingScope(this);
+            for (Modifier modifier : catchParameter.modifiers) if (modifier instanceof Annotation) ((Annotation) modifier).setEnclosingScope(this);
             (this.body           = body).setEnclosingScope(this);
         }
 
@@ -3832,6 +3914,7 @@ class Java {
             this.variableDeclarators = variableDeclarators;
 
             this.type.setEnclosingScope(this);
+            for (Modifier modifier : modifiers) if (modifier instanceof Annotation) ((Annotation) modifier).setEnclosingScope(this);
             for (VariableDeclarator vd : variableDeclarators) vd.setEnclosingScope(this);
         }
 
@@ -4189,11 +4272,18 @@ class Java {
         /**
          * One of {@link Primitive#VOID}, {@link Primitive#BYTE} and consorts.
          */
+        @Override public void setEnclosingScope(Scope scope) {
+            super.setEnclosingScope(scope);
+            for (Annotation annotation : this.annotations) annotation.setEnclosingScope(scope);
+        }
         public final Primitive primitive;
+        public final Annotation[] annotations;
 
         public
-        PrimitiveType(Location location, Primitive primitive) {
+        PrimitiveType(Location location, Primitive primitive) { this(location, primitive, new Annotation[0]); }
+        public PrimitiveType(Location location, Primitive primitive, Annotation[] annotations) {
             super(location);
+            this.annotations = annotations;
             this.primitive = primitive;
         }
 
@@ -4244,6 +4334,8 @@ class Java {
          * The list of (dot-separated) identifiers that pose the reference type, e.g. "java", "util", "Map".
          */
         public final String[] identifiers;
+        public Annotation[][] segmentAnnotations;
+        public TypeArgument[][] segmentTypeArguments;
 
         /**
          * The optional type arguments of the reference type.
@@ -4262,14 +4354,19 @@ class Java {
             this.annotations = annotations;
             assert identifiers != null;
             this.identifiers   = identifiers;
+            this.segmentAnnotations = new Annotation[identifiers.length][0];
+            this.segmentTypeArguments = new TypeArgument[identifiers.length][];
+            this.segmentTypeArguments[identifiers.length - 1] = typeArguments;
             this.typeArguments = typeArguments;
         }
 
         @Override public void
         setEnclosingScope(Scope enclosingScope) {
             super.setEnclosingScope(enclosingScope);
-            if (this.typeArguments != null) {
-                for (TypeArgument ta : this.typeArguments) ta.setEnclosingScope(enclosingScope);
+            for (Annotation a : this.annotations) a.setEnclosingScope(enclosingScope);
+            for (Annotation[] segment : this.segmentAnnotations) for (Annotation annotation : segment) annotation.setEnclosingScope(enclosingScope);
+            for (TypeArgument[] arguments : this.segmentTypeArguments) if (arguments != null) {
+                for (TypeArgument argument : arguments) argument.setEnclosingScope(enclosingScope);
             }
         }
 
@@ -4277,8 +4374,12 @@ class Java {
         toString() {
             String s = Java.join(this.annotations, " ");
             if (this.annotations.length >= 1) s += ' ';
-            s += Java.join(this.identifiers, ".");
-            if (this.typeArguments != null) s += '<' + Java.join(this.typeArguments, ", ") + ">";
+            for (int i = 0; i < this.identifiers.length; i++) {
+                if (i > 0) s += '.';
+                if (this.segmentAnnotations[i].length > 0) s += Java.join(this.segmentAnnotations[i], " ") + ' ';
+                s += this.identifiers[i];
+                if (this.segmentTypeArguments[i] != null) s += '<' + Java.join(this.segmentTypeArguments[i], ", ") + ">";
+            }
             return s;
         }
 
@@ -4328,6 +4429,14 @@ class Java {
          * The simple name of the inner type being instantiated.
          */
         public final String identifier;
+        @Nullable public TypeArgument[] typeArguments;
+        public Annotation[] annotations = new Annotation[0];
+
+        @Override public void setEnclosingScope(Scope scope) {
+            super.setEnclosingScope(scope);
+            if (this.typeArguments != null) for (TypeArgument argument : this.typeArguments) argument.setEnclosingScope(scope);
+            for (Annotation annotation : this.annotations) annotation.setEnclosingScope(scope);
+        }
 
         /**
          * Notice: The <var>rvalue</var> is not a subordinate object!
@@ -4361,8 +4470,11 @@ class Java {
         public final Type componentType;
 
         public
-        ArrayType(Type componentType) {
+        ArrayType(Type componentType) { this(componentType, new Annotation[0]); }
+        public final Annotation[] annotations;
+        public ArrayType(Type componentType, Annotation[] annotations) {
             super(componentType.getLocation());
+            this.annotations = annotations;
             this.componentType = componentType;
         }
 
@@ -4370,6 +4482,7 @@ class Java {
         setEnclosingScope(final Scope enclosingScope) {
             super.setEnclosingScope(enclosingScope);
             this.componentType.setEnclosingScope(enclosingScope);
+            for (Annotation annotation : this.annotations) annotation.setEnclosingScope(enclosingScope);
         }
 
         @Override public String
@@ -4407,6 +4520,10 @@ class Java {
         public final void
         setEnclosingScope(final Java.Scope enclosingScope) {
             new AbstractTraverser<RuntimeException>() {
+                @Override public void
+                traverseBinaryOperation(Java.BinaryOperation operation) {
+                    this.traverseBinaryOperationIteratively(operation);
+                }
 
                 @Override public void
                 traverseRvalue(Java.Rvalue rv) {
@@ -5255,6 +5372,9 @@ class Java {
     public static final
     class Cast extends Rvalue {
 
+        public final Type[] additionalBounds;
+        @Nullable IClass intersectionType;
+
         /**
          * The type to convert to.
          */
@@ -5267,8 +5387,13 @@ class Java {
 
         public
         Cast(Location location, Type targetType, Rvalue value) {
+            this(location, targetType, new Type[0], value);
+        }
+
+        public Cast(Location location, Type targetType, Type[] additionalBounds, Rvalue value) {
             super(location);
             this.targetType = targetType;
+            this.additionalBounds = additionalBounds;
             this.value      = value;
         }
 
@@ -5277,7 +5402,11 @@ class Java {
         // Implement "Atom".
 
         @Override public String
-        toString() { return '(' + this.targetType.toString() + ") " + this.value.toString(); }
+        toString() {
+            StringBuilder result = new StringBuilder("(").append(this.targetType);
+            for (Type bound : this.additionalBounds) result.append(" & ").append(bound);
+            return result.append(") ").append(this.value).toString();
+        }
 
         @Override @Nullable public <R, EX extends Throwable> R
         accept(RvalueVisitor<R, EX> visitor) throws EX { return visitor.visitCast(this); }
@@ -5314,6 +5443,8 @@ class Java {
      */
     public abstract static
     class ConstructorInvocation extends Atom implements BlockStatement {
+        @Nullable public TypeArgument[] typeArguments;
+
 
         /**
          * The arguments to pass to the constructor.
@@ -5453,6 +5584,10 @@ class Java {
          */
         @Nullable IClass.IMethod iMethod;
 
+        // Varargs adaptation belongs to this call, not the shared IMethod. Resolving another
+        // invocation of that method can change IInvocable.argsNeedAdjust().
+        boolean argumentsNeedAdjust;
+
         @Override public String
         toString() {
             StringBuilder sb = new StringBuilder();
@@ -5476,15 +5611,26 @@ class Java {
     public static final
     class SuperclassMethodInvocation extends Invocation {
 
+        @Nullable public final Type qualification;
+        @Nullable IClass receiverType;
+        @Nullable IClass invocationType;
+        @Nullable IClass.IMethod iMethod;
+        boolean argumentsNeedAdjust;
+
         public
         SuperclassMethodInvocation(Location location, String methodName, Rvalue[] arguments) {
+            this(location, null, methodName, arguments);
+        }
+
+        public SuperclassMethodInvocation(Location location, @Nullable Type qualification, String methodName, Rvalue[] arguments) {
             super(location, methodName, arguments);
+            this.qualification = qualification;
         }
 
         // Implement "Atom".
 
         @Override public String
-        toString() { return "super." + this.methodName + "()"; }
+        toString() { return (this.qualification == null ? "" : this.qualification + ".") + "super." + this.methodName + "()"; }
 
         @Override @Nullable public <R, EX extends Throwable> R
         accept(RvalueVisitor<R, EX> visitor) throws EX { return visitor.visitSuperclassMethodInvocation(this); }
@@ -5495,6 +5641,7 @@ class Java {
      */
     public abstract static
     class Invocation extends Rvalue {
+        @Nullable public TypeArgument[] typeArguments;
 
         /**
          * Name of the invoked method.
@@ -5519,6 +5666,8 @@ class Java {
      */
     public static final
     class NewClassInstance extends Rvalue {
+        @Nullable public TypeArgument[] typeArguments;
+
 
         /**
          * The qualification of this "qualified class instance creation expression".
@@ -5592,6 +5741,8 @@ class Java {
      */
     public static final
     class NewAnonymousClassInstance extends Rvalue {
+        @Nullable public TypeArgument[] typeArguments;
+
 
         /**
          * The qualification iff this a "qualified anonymous class instance creation expression".
@@ -5666,6 +5817,7 @@ class Java {
      */
     public static final
     class NewArray extends Rvalue {
+        public Annotation[][] dimensionAnnotations = new Annotation[0][];
 
         /**
          * The component type of the ({@link #dimExprs}{@code .length + }{@link #dims})-dimensional array to
@@ -5865,6 +6017,19 @@ class Java {
             this.parameters = parameters;
             this.body       = body;
         }
+
+        // Compile time members.
+
+        /**
+         * The expected type of this LAMBDA expression; must be set by the compiler before this LAMBDA expression is
+         * compiled, for otherwise its compilation is impossible (JLS9 15.27.3).
+         */
+        @Nullable IType targetIType;
+
+        /**
+         * The desugared "new anonymous class instance"; set and reused by JANINO's {@link UnitCompiler}.
+         */
+        @Nullable Rvalue desugared;
 
         @Override @Nullable public <R, EX extends Throwable> R
         accept(RvalueVisitor<R, EX> rvv) throws EX { return rvv.visitLambdaExpression(this); }
@@ -6177,6 +6342,9 @@ class Java {
      */
     public static final
     class MethodReference extends Rvalue {
+        @Nullable public TypeArgument[] typeArguments;
+        public boolean superReference;
+        @Nullable public Type superQualification;
 
         /**
          * The expression name, primary or reference type that poses the left hand side of the expression.
@@ -6195,11 +6363,19 @@ class Java {
             this.methodName = methodName;
         }
 
+        // Compile time members.
+
+        /** @see LambdaExpression#targetIType */
+        @Nullable IType targetIType;
+
+        /** @see LambdaExpression#desugared */
+        @Nullable Rvalue desugared;
+
         @Override @Nullable public <R, EX extends Throwable> R
         accept(RvalueVisitor<R, EX> rvv) throws EX { return rvv.visitMethodReference(this); }
 
         @Override public String
-        toString() { return this.lhs + "::" + this.methodName; }
+        toString() { return this.lhs + "::" + (this.typeArguments == null ? "" : "<" + Java.join(this.typeArguments, ", ") + ">") + this.methodName; }
     }
 
     /**
@@ -6226,6 +6402,14 @@ class Java {
             this.typeArguments = typeArguments;
         }
 
+        // Compile time members.
+
+        /** @see LambdaExpression#targetIType */
+        @Nullable IType targetIType;
+
+        /** @see LambdaExpression#desugared */
+        @Nullable Rvalue desugared;
+
         @Override @Nullable public <R, EX extends Throwable> R
         accept(RvalueVisitor<R, EX> rvv) throws EX { return rvv.visitInstanceCreationReference(this); }
 
@@ -6250,6 +6434,14 @@ class Java {
             super(location);
             this.type = type;
         }
+
+        // Compile time members.
+
+        /** @see LambdaExpression#targetIType */
+        @Nullable IType targetIType;
+
+        /** @see LambdaExpression#desugared */
+        @Nullable Rvalue desugared;
 
         @Override @Nullable public <R, EX extends Throwable> R
         accept(RvalueVisitor<R, EX> rvv) throws EX { return rvv.visitArrayCreationReference(this); }
@@ -6360,6 +6552,9 @@ class Java {
          */
         public final boolean finaL;
 
+        /** Whether assignments seen by the source flow analysis still permit capture. */
+        public boolean effectivelyFinal = true;
+
         /**
          * The type of this local variable.
          */
@@ -6445,13 +6640,13 @@ class Java {
         /**
          * The reference type of this wildcard's EXTENDS or SUPER bounds.
          */
-        @Nullable public final ReferenceType referenceType;
+        @Nullable public final Type referenceType;
 
         public
         Wildcard(Annotation[] annotations) { this(Wildcard.BOUNDS_NONE, null, annotations); }
 
         public
-        Wildcard(int bounds, @Nullable ReferenceType referenceType, Annotation[] annotations) {
+        Wildcard(int bounds, @Nullable Type referenceType, Annotation[] annotations) {
             if (referenceType == null) {
                 assert bounds == Wildcard.BOUNDS_NONE;
                 this.bounds        = bounds;
@@ -6468,6 +6663,7 @@ class Java {
 
         @Override public void
         setEnclosingScope(Scope enclosingScope) {
+            for (Annotation a : this.annotations) a.setEnclosingScope(enclosingScope);
             if (this.referenceType != null) this.referenceType.setEnclosingScope(enclosingScope);
         }
 
