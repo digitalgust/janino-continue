@@ -24,7 +24,152 @@ Release 4.0.0 published in maven
     <artifactId>janino</artifactId>
     <version>4.0.0</version>
 </dependency>
+
+<dependency><!-- Not need this if using io.github.digitalgust.janino -->
+    <groupId>io.github.digitalgust</groupId>
+    <artifactId>commons-compiler-jdk</artifactId>
+    <version>4.0.0</version>
+</dependency>
 ```
+
+## Module description
+
+| Module | Purpose |
+|---|---|
+| `commons-compiler` | Shared compiler/evaluator interfaces, compiler-factory discovery, resource utilities and the standalone `Javac` / `Jar` command-line tools. A compiler backend is required for compilation. |
+| `janino` | The Java compiler backend: parsing, type checking, bytecode generation, in-memory compilation and expression/script/class-body evaluators. Depends on `commons-compiler`; no JDK compiler is required. |
+| `commons-compiler-jdk` | Optional implementation of the same interfaces using the JDK's `javax.tools.JavaCompiler`. Requires a JDK compiler; an alternative to the Janino backend. |
+| `commons-compiler-tests` | Shared regression tests run against the Janino and JDK backends. Not needed by applications at runtime. |
+| `janino-parent` | Maven parent and reactor: shared versions, build settings and aggregation of the four modules above. Produces no runtime jar. |
+
+## Javac and Jar Description
+
+Both tools have standalone `main()` entry points in `org.codehaus.commons.compiler.tools`.
+Run them by class name with `-cp`; the examples below assume `commons-compiler.jar` and
+`janino.jar` are in the current directory, Java sources are under `src/`, and resources
+are under `resources/`. Use the actual jar filenames if they include a version suffix.
+Examples use Windows classpath separators (`;`); use `:` on Linux/macOS.
+
+### Javac: compile Java sources
+
+`Javac` discovers a compiler backend on its application classpath. With the two jars below,
+it uses Janino and can run on a JRE without the JDK `javac` executable:
+
+```shell
+java -cp "commons-compiler.jar;janino.jar" org.codehaus.commons.compiler.tools.Javac -source 8 -target 8 -encoding UTF-8 -d build/classes src
+java -cp "commons-compiler.jar;janino.jar" org.codehaus.commons.compiler.tools.Javac -help
+```
+
+Source arguments can be individual `.java` files or directories, which are scanned recursively.
+The `java -cp` before the main class loads the tool and backend; the tool's own `-cp`
+after the main class supplies dependencies of the code being compiled.
+To use the JDK backend instead, replace `janino.jar` with `commons-compiler-jdk.jar`
+and run with a JDK compiler available.
+
+| Option | Meaning |
+|---|---|
+| `-d <dir>` | Destination directory for generated class files. |
+| `-cp <path>`, `-classpath <path>`, `--class-path <path>` | Classpath of source dependencies; separate entries with the platform path separator. |
+| `-bootclasspath <path>` | Bootstrap API classes used for compilation, e.g. `minijvm_rt.jar`. |
+| `-sourcepath <path>` | Directories in which to find referenced Java source files. |
+| `-encoding <name>` | Source encoding, e.g. `UTF-8`. |
+| `-source <release>` | Source language version, e.g. `8` or `1.8`. |
+| `-target <release>` | Generated class-file version, e.g. `8` or `1.8`; specify `8` for Java 8 features and metadata. |
+| `--release <release>` | Sets both source and target versions, e.g. `--release 8`. Does **not** select the corresponding historical JDK API; supply the intended APIs through `-bootclasspath` / `-cp`. |
+| `-g:lines,vars,source`, `-g:none` | Select debug attributes (any subset of `lines`, `vars`, `source`) or disable them. Default is `lines,source`; plain `-g` retains the current settings. |
+| `-parameters` | Emit reflection parameter names (target 8+). |
+| `-verbose` | Print compilation progress. |
+| `-version`, `--version` | Print the tool version. |
+| `-help`, `-h`, `--help` | Print supported options. |
+| `@<file>` | Read additional arguments from a file, **one argument per line**. Blank lines and lines starting with `#` are ignored. |
+
+`-nowarn`, `-proc:none` and `-XDcompilePolicy=simple` are accepted and ignored.
+This is a subset of the JDK command line; other options are rejected.
+
+For example, an argument file named `compile.args` can contain:
+
+```text
+-source
+8
+-target
+8
+-encoding
+UTF-8
+-d
+build/classes
+src
+```
+
+```shell
+java -cp "commons-compiler.jar;janino.jar" org.codehaus.commons.compiler.tools.Javac @compile.args
+```
+
+Argument-file lines are not shell-tokenized: do not put an option and its value on the same
+line, and do not add quotes around paths containing spaces. The file uses the JVM's default
+text encoding. Resources are packaged separately with `Jar`.
+
+### Jar: create, list or extract archives
+
+`Jar` needs only `commons-compiler.jar`; it requires neither a compiler backend nor the JDK
+`jar` executable. It writes a manifest automatically and can combine classes and resources:
+
+```shell
+java -cp commons-compiler.jar org.codehaus.commons.compiler.tools.Jar cf app.jar -C build/classes . -C resources .
+java -cp commons-compiler.jar org.codehaus.commons.compiler.tools.Jar cfe app.jar com.example.Main -C build/classes . -C resources .
+java -cp commons-compiler.jar org.codehaus.commons.compiler.tools.Jar tvf app.jar
+java -cp commons-compiler.jar org.codehaus.commons.compiler.tools.Jar xf app.jar
+```
+
+The second example sets `Main-Class` for an application whose entry point is
+`com.example.Main`. Extraction writes into the current working directory; change directory
+first to choose a destination.
+
+```text
+Jar {ctx}[vf0me] [jarfile] [manifest] [entrypoint] [-C dir] inputs...
+```
+
+| Flag / argument | Meaning |
+|---|---|
+| `c`, `t`, `x` | Create, list or extract; select exactly one operation. |
+| `f <jarfile>` | Archive filename; required for every operation. |
+| `v` | Verbose output. |
+| `0` | Store entries without compression (create only). |
+| `m <manifest>` | Use a supplied manifest file (create only). |
+| `e <entrypoint>` | Set the manifest's `Main-Class` (create only). |
+| `-C <dir>` | Resolve following input paths relative to this directory; may be repeated (create only). |
+| `inputs...` | Files/directories to archive recursively. For list/extract, optional entry names or directory prefixes select entries; no wildcard matching. |
+
+Combine flags into one argument, e.g. `cf`, `cfe` or `tvf` (a leading `-` is also accepted).
+Values for `f`, `m` and `e` follow in the same order as those letters in the flag string:
+
+```shell
+java -cp commons-compiler.jar org.codehaus.commons.compiler.tools.Jar cfm app.jar MANIFEST.MF -C build/classes .
+java -cp commons-compiler.jar org.codehaus.commons.compiler.tools.Jar tf app.jar com/example/
+```
+
+The supported operations are create/list/extract; archive update (`u`) is not implemented.
+
+### Run on miniJVM
+
+From `miniJVM/binary/win_x64`, using the published runtime and compiler jars, for example:
+
+```shell
+.\mini_jvm.exe -bootclasspath ../lib/minijvm_rt.jar -cp "../libex/commons-compiler.jar;../libex/janino.jar" org.codehaus.commons.compiler.tools.Javac -bootclasspath ../lib/minijvm_rt.jar -source 8 -target 8 -encoding UTF-8 -d D:/work/classes D:/work/src
+.\mini_jvm.exe -bootclasspath ../lib/minijvm_rt.jar -cp ../libex/commons-compiler.jar org.codehaus.commons.compiler.tools.Jar cf D:/work/app.jar -C D:/work/classes .
+```
+
+Replace `D:/work` with your project directory. The VM's `-bootclasspath` loads its runtime;
+the compiler's separate `-bootclasspath` selects the APIs the source code is compiled against.
+Both tools return exit code `0` on success; compilation/I/O failures return `1`, and invalid
+arguments or other exceptions return `2`.
+
+
+---
+---
+---
+---
+Here is the description from the original repository：
+
 
 # Janino
 
