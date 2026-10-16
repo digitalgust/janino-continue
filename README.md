@@ -3,13 +3,28 @@ This project forked from:
 [janino-compiler/janino](https://github.com/janino-compiler/janino)
 
 This fork extends Janino with java 8 syntax compile.
-Release 4.0.0 published in maven  
 
 * Full compile spring-boot 2.7.x, total 2233 source files.
 * Full compile Apache Dubbo 2.7.x, total 115 modules, 1402 source files.
 * Full compile Elasticsearch 6.1.5, total 55 modules, 3626 source files.
 * Full compile Apache commons-lang, total 264 source files. 
 * Bootstrap compilation on miniJVM is supported. 
+
+Release 4.0.0 published in maven  
+
+```
+<dependency>
+    <groupId>io.github.digitalgust</groupId>
+    <artifactId>commons-compiler</artifactId>
+    <version>4.0.0</version>
+</dependency>
+
+<dependency>
+    <groupId>io.github.digitalgust</groupId>
+    <artifactId>janino</artifactId>
+    <version>4.0.0</version>
+</dependency>
+```
 
 # Janino
 
@@ -142,33 +157,6 @@ the upstream historical JRE matrix is not a current validation claim for this fo
 
 The following elements of the Java programming language are not implemented (or, where noted, are only partially implemented):
 
-+   Java 5 / Java 8 generic type checking:
-    +   Generic bounds, assignment invariance, type-variable identity and per-expression wildcard capture are checked.
-        Capture includes declared and intersection bounds. Tested inference covers dependent and mutually recursive
-        bounds in diamond creation, generic calls and references; full JLS 18 inference remains incomplete
-    +   Tested lambda inference uses explicit parameter types, result expressions and escaping checked exceptions.
-        Common upper bounds retain multiple interfaces and parameterized supertype views in tested cases
-    +   Unchecked casts to source type variables and generic arrays are supported in tested cases, with upper-bound
-        and incompatible generic-argument checks. Return adaptation preserves required runtime casts and avoids
-        casts for tested Object consumers, explicit reference casts, reference comparisons, instanceof, string
-        concatenation and discarded invocation results, while retaining required receiver and unboxing checks
-    +   Parameterized enclosing member types such as `Outer<String>.Inner<Integer>` are supported in declarations,
-        casts, inheritance and class creation, with owner substitution and source/binary generic signatures.
-        Parameterized method-reference qualifiers such as `List<String>::size` and `Outer<String>.Inner<Integer>::get`
-        retain receiver, argument and return type checking; parameterized constructor and reifiable array references are supported
-    +   Functional overload resolution covers tested explicitly typed expression/block lambdas, nested poly calls
-        and exact generic method references; it is not a complete implementation of all overload/inference combinations
-+   Java 8 type annotations:
-    +   Supported positions include fields, returns, formal parameters, `throws`, type parameters/bounds, receivers,
-        superclass/interfaces, local/resource/catch variables, casts, `instanceof`, object/array creation and explicit
-        method/constructor invocation type arguments. Parameterized owner paths, all intersection-cast bounds,
-        anonymous/qualified class creation, constructor results and annotated dimensions/varargs are covered by tests
-    +   Reference-expression targets (0x45/0x46/0x4a/0x4b) are emitted at the corresponding anonymous-object
-        creation or generated factory-call instruction. Complete JSR 308 coverage and all synthetic rewrite
-        combinations are not claimed
-+   Metadata and language conformance:
-    +   Parameter annotations and tested local-class enclosing metadata are emitted; all synthetic/private rewrites
-        and every declaration-validity rule have not been verified against javac
 
 +   Java 9 language features:
     +   Diamond operator with inner classes

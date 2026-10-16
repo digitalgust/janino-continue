@@ -22,13 +22,7 @@
   <description>The &quot;JANINO&quot; implementation of the &quot;commons-compiler&quot; API: Super-small, super-fast, independent from the JDK's &quot;tools.jar&quot;.</description>
 
   <dependencies>
-    <!-- The optional Ant adapter is compiled here; Ant supplies these classes at runtime. -->
-    <dependency>
-      <groupId>org.apache.ant</groupId>
-      <artifactId>ant</artifactId>
-      <version>1.10.12</version>
-      <scope>provided</scope>
-    </dependency>
+
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
