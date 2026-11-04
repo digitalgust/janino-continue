@@ -3279,15 +3279,6 @@ class UnitCompiler {
         if (raw.isInterface()) result.put(this.iClassLoader.TYPE_java_lang_Object, this.iClassLoader.TYPE_java_lang_Object);
     }
 
-    @Nullable private static Byte
-    isByteConstant(@Nullable Object o) {
-        if (o instanceof Integer) {
-            int v = (Integer) o;
-            return v >= Byte.MIN_VALUE && v <= Byte.MAX_VALUE ? Byte.valueOf((byte) v) : null;
-        }
-        return null;
-    }
-
     private IType
     compileGet2(Crement c) throws CompileException {
 
@@ -7290,43 +7281,22 @@ class UnitCompiler {
                 && (mhsType == IClass.SHORT || mhsType == this.iClassLoader.TYPE_java_lang_Short)
             ) return IClass.SHORT;
 
-            // JLS7 15.25, list 1, bullet 4, bullet 2: "b ? (byte) 1 : byte => byte"
+            // JLS 15.25: an int constant narrows only when it is representable in
+            // the other operand's byte/short/char type (possibly after unboxing).
+            // This is a type-selection probe, not an assignment: an out-of-range
+            // constant must fall through to binary numeric promotion, without a diagnostic.
+            IType mhsPrimitive = this.getUnboxedType(mhsType);
+            IType rhsPrimitive = this.getUnboxedType(rhsType);
             Object rhscv = this.constantEvaluator.getConstantValue(ce.rhs);
             if (
-                (mhsType == IClass.BYTE || mhsType == IClass.SHORT || mhsType == IClass.CHAR)
-                && rhscv != null
-                && rhscv != UnitCompiler.NOT_CONSTANT
-                && this.constantAssignmentConversion(ce.rhs, rhscv, mhsType) != null
-            ) return mhsType;
+                rhsType == IClass.INT
+                && UnitCompiler.isRepresentableIntConstant(rhscv, mhsPrimitive)
+            ) return mhsPrimitive;
             Object mhscv = this.constantEvaluator.getConstantValue(ce.mhs);
             if (
-                (rhsType == IClass.BYTE || rhsType == IClass.SHORT || rhsType == IClass.CHAR)
-                && mhscv != null
-                && mhscv != UnitCompiler.NOT_CONSTANT
-                && this.constantAssignmentConversion(ce.mhs, mhscv, rhsType) != null
-            ) return rhsType;
-
-            // JLS7 15.25, list 1, bullet 4, bullet 3: "b ? 127 : byte => byte"
-            if (
                 mhsType == IClass.INT
-                && rhsType == IClass.BYTE
-                && UnitCompiler.isByteConstant(mhscv) != null
-            ) {
-
-                // Fix up the constant to be a byte
-                ce.mhs.constantValue = UnitCompiler.isByteConstant(mhscv);
-                return IClass.BYTE;
-            }
-            if (
-                rhsType == IClass.INT
-                && mhsType == IClass.BYTE
-                && UnitCompiler.isByteConstant(rhscv) != null
-            ) {
-
-                // Fix up the constant to be a byte
-                ce.rhs.constantValue = UnitCompiler.isByteConstant(rhscv);
-                return IClass.BYTE;
-            }
+                && UnitCompiler.isRepresentableIntConstant(mhscv, rhsPrimitive)
+            ) return rhsPrimitive;
 
             // JLS7 15.25, list 1, bullet 4, bullet 4: "b ? Integer : Double => double"
             return this.binaryNumericPromotionType(
@@ -7345,6 +7315,16 @@ class UnitCompiler {
 
     private IType
     getType2(Crement c) throws CompileException { return this.getType(c.operand); }
+
+    private static boolean
+    isRepresentableIntConstant(@Nullable Object value, IType type) {
+        if (!(value instanceof Integer)) return false;
+        int number = ((Integer) value).intValue();
+        if (type == IClass.BYTE) return number >= Byte.MIN_VALUE && number <= Byte.MAX_VALUE;
+        if (type == IClass.SHORT) return number >= Short.MIN_VALUE && number <= Short.MAX_VALUE;
+        if (type == IClass.CHAR) return number >= Character.MIN_VALUE && number <= Character.MAX_VALUE;
+        return false;
+    }
 
     private IType
     getType2(ArrayAccessExpression aae) throws CompileException {
