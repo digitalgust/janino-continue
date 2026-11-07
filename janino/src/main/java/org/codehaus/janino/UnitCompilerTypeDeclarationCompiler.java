@@ -377,19 +377,30 @@ final class UnitCompilerTypeDeclarationCompiler {
         this.annotationCompiler.compileDeclarationAnnotations(cd.getAnnotations(), "TYPE", cf, cf);
 
         if (cd instanceof LocalClassDeclaration || cd instanceof AnonymousClassDeclaration) {
+            String innerName = cd instanceof LocalClassDeclaration ? ((LocalClassDeclaration) cd).getName() : null;
+            this.addLocalOrAnonymousClassEntry(cf, iClass.getDescriptor(), innerName, accessFlags);
 
-            // Add an "InnerClasses" attribute entry for this anonymous class declaration on the class file (JLS8,
-            // section 4.7.6, "The InnerClasses Attribute").
-            short innerClassInfoIndex = cf.addConstantClassInfo(iClass.getDescriptor());
-            short innerNameIndex      = (
-                cd instanceof Java.NamedTypeDeclaration ? cf.addConstantUtf8Info(((Java.NamedTypeDeclaration) cd).getName()) : (short) 0
-            );
-            cf.addInnerClassesAttributeEntry(new ClassFile.InnerClassesAttribute.Entry(
-                innerClassInfoIndex,  // innerClassInfoIndex
-                (short) 0,            // outerClassInfoIndex
-                innerNameIndex,       // innerNameIndex
-                accessFlags           // innerClassAccessFlags
-            ));
+            Java.Scope enclosing = cd.getEnclosingScope();
+            while (!(enclosing instanceof TypeDeclaration) && !(enclosing instanceof FunctionDeclarator)) {
+                enclosing = enclosing.getEnclosingScope();
+            }
+
+            String ownerDescriptor;
+            if (enclosing instanceof FunctionDeclarator) {
+                FunctionDeclarator function = (FunctionDeclarator) enclosing;
+                ownerDescriptor = this.context.resolve(function.getDeclaringType()).getDescriptor();
+                cf.addEnclosingMethodAttribute(ownerDescriptor, function.name, this.context.functionDescriptor(function));
+            } else {
+                ownerDescriptor = this.context.resolve((TypeDeclaration) enclosing).getDescriptor();
+                cf.addEnclosingMethodAttribute(ownerDescriptor, null, null);
+            }
+
+            // Reflection expects a matching entry in the enclosing class. During capture discovery the
+            // current code context can still belong to a class outside the actual enclosing class.
+            ClassFile owner = this.context.getCodeContext().getClassFile();
+            if (owner.getThisClassName().equals(Descriptor.toClassName(ownerDescriptor))) {
+                this.addLocalOrAnonymousClassEntry(owner, iClass.getDescriptor(), innerName, accessFlags);
+            }
         } else
         if (cd.getEnclosingScope() instanceof TypeDeclaration) {
 
@@ -406,22 +417,6 @@ final class UnitCompilerTypeDeclarationCompiler {
                 innerNameIndex,       // innerNameIndex
                 accessFlags           // innerClassAccessFlags
             ));
-        }
-
-        // A local or anonymous declaration is enclosed by a method, constructor or initializer.
-        if (!(cd.getEnclosingScope() instanceof TypeDeclaration) && !(cd.getEnclosingScope() instanceof CompilationUnit)) {
-            Java.Scope enclosing = cd.getEnclosingScope();
-            while (!(enclosing instanceof TypeDeclaration)) {
-                if (enclosing instanceof FunctionDeclarator) {
-                    FunctionDeclarator function = (FunctionDeclarator) enclosing;
-                    String descriptor = this.context.functionDescriptor(function);
-                    cf.addEnclosingMethodAttribute(this.context.resolve(function.getDeclaringType()).getDescriptor(), function.name, descriptor);
-                    break;
-                }
-                enclosing = enclosing.getEnclosingScope();
-            }
-            if (enclosing instanceof TypeDeclaration) cf.addEnclosingMethodAttribute(
-                this.context.resolve((TypeDeclaration) enclosing).getDescriptor(), null, null);
         }
 
         // Set the "SourceFile" attribute (JVMS8, section 4.7.10, "The SourceFile Attribute") on this class file.
@@ -886,6 +881,24 @@ final class UnitCompilerTypeDeclarationCompiler {
 //        this.fakeCompileVariableDeclaratorsAndInitializers(acd);
 
         this.compile2((InnerClassDeclaration) acd);
+    }
+
+    private void
+    addLocalOrAnonymousClassEntry(ClassFile cf, String descriptor, @Nullable String name, short accessFlags) {
+        short innerClassInfoIndex = cf.addConstantClassInfo(descriptor);
+        ClassFile.InnerClassesAttribute attribute = cf.getInnerClassesAttribute();
+        if (attribute != null) {
+            // An initializer can be compiled more than once, for example in multiple constructors.
+            for (ClassFile.InnerClassesAttribute.Entry entry : attribute.getEntries()) {
+                if (entry.innerClassInfoIndex == innerClassInfoIndex) return;
+            }
+        }
+        cf.addInnerClassesAttributeEntry(new ClassFile.InnerClassesAttribute.Entry(
+            innerClassInfoIndex,
+            (short) 0, // Local and anonymous classes have no outer_class_info_index.
+            name == null ? (short) 0 : cf.addConstantUtf8Info(name),
+            accessFlags
+        ));
     }
 
     /** Constant-specific bodies are anonymous subclasses, not instances of the enum's base class. */
