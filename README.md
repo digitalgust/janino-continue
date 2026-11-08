@@ -16,19 +16,19 @@ Release 4.0.0 published in maven
 <dependency>
     <groupId>io.github.digitalgust</groupId>
     <artifactId>commons-compiler</artifactId>
-    <version>4.0.0</version>
+    <version>4.0.1</version>
 </dependency>
 
 <dependency>
     <groupId>io.github.digitalgust</groupId>
     <artifactId>janino</artifactId>
-    <version>4.0.0</version>
+    <version>4.0.1</version>
 </dependency>
 
 <dependency><!-- Not need this if using io.github.digitalgust.janino -->
     <groupId>io.github.digitalgust</groupId>
     <artifactId>commons-compiler-jdk</artifactId>
-    <version>4.0.0</version>
+    <version>4.0.1</version>
 </dependency>
 ```
 
